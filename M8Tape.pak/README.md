@@ -61,8 +61,6 @@ visit.
 - **USB capture** via `arecord` at the fixed 24ch / S24_3LE / 44.1 kHz format.
 - **USB stability**: `snd_usb_audio.nrpacks=1`, USB autosuspend disabled, and
   device power control forced on for the duration of the take.
-- **Write throughput**: NextUI mounts the card `sync`; M8Tape remounts it
-  `async` while recording and restores `sync` on stop.
 - **Scheduling**: elevated process priority (`nice -n -19`) and large
   `arecord` buffers.
 - **Split**: via `m8split` if present, otherwise `sox`; if neither is
