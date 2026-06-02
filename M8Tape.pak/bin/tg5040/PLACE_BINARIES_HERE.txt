@@ -1,0 +1,16 @@
+Depose ici les binaires compiles pour tg5040 (la TrimUI Brick) :
+
+  bin/tg5040/minui-list   (interface menu)
+  bin/tg5040/m8split      (decoupage 24ch -> 12 stereo)
+
+1) minui-list :
+   https://github.com/josegonzalez/minui-list/releases/latest
+   prends l'asset minui-list-tg5040, chmod +x. Le pak accepte le nom
+   minui-list ou minui-list-tg5040.
+   Sans lui : pak en mode bascule, sans menu.
+
+2) m8split :
+   compile la source fournie (dossier m8split-rs), voir le README du pak.
+   chmod +x.
+   Sans lui : si sox est present sur l'appareil il est utilise a la place ;
+   sinon le WAV 24 canaux brut est conserve, non decoupe.

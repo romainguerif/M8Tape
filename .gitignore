@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Binaires tiers / compilés à déposer localement (voir bin/tg5040/PLACE_BINARIES_HERE.txt)
+M8Tape.pak/bin/tg5040/minui-list
+M8Tape.pak/bin/tg5040/minui-list-tg5040
+M8Tape.pak/bin/tg5040/m8split
+
+# État runtime créé sur l'appareil
+M8Tape.pak/state/
+M8Tape.pak/use_ram
+
+# Prises enregistrées
+M8Tape.pak/rec_*/
