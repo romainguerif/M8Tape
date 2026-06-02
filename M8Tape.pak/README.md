@@ -42,7 +42,9 @@ after a successful split.
 
    These binaries are not committed to the repository. `m8split` is built from
    the included C source with a single `zig` command (see below).
-3. Run `chmod +x` on `launch.sh` and both binaries.
+That's all — nothing needs to be typed on the Brick. The pak sets the
+executable bit on `launch.sh` and the binaries itself at each launch (FAT32 /
+exFAT cards do not store permissions).
 
 ## Usage
 

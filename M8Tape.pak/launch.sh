@@ -17,6 +17,11 @@ LOG="$STATE/arecord.log"
 STATUS="$STATE/status.txt"
 mkdir -p "$OUTDIR" "$STATE" 2>/dev/null
 
+# Bit executable sur les binaires : les cartes FAT32/exFAT ne stockent pas les
+# permissions, donc on les (re)pose a chaque lancement. Ainsi rien a taper sur
+# l'appareil ; il faut juste que les fichiers soient presents.
+chmod +x "$0" "$PAK"/bin/"$PLATFORM"/* "$PAK"/minui-list "$PAK"/m8split 2>/dev/null
+
 # Parametres de capture, figes par le diagnostic : 24 canaux, 24 bits packes, 44.1k.
 DEV="hw:M8"
 CH=24
