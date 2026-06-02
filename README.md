@@ -75,6 +75,21 @@ visit.
   removes glitches on slow cards but limits take length to available RAM
   (~3 min on the Brick). Delete `use_ram` to return to direct mode.
 
+## Desktop splitting (`split_m8.sh`)
+
+If a take comes back from the device as a raw 24-channel WAV (no splitter was
+available on the Brick), split it on a computer with
+[`split_m8.sh`](split_m8.sh). It requires no compilation and uses `ffmpeg` or
+`sox`, whichever is installed.
+
+```sh
+chmod +x split_m8.sh
+./split_m8.sh take_24ch.wav [output_dir]
+```
+
+Output defaults to a `<name>_stems/` folder next to the input, containing
+`01.wav` … `12.wav` (same pairing as on-device).
+
 ## Fallbacks and troubleshooting
 
 | Situation | Behavior |
