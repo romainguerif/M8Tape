@@ -12,3 +12,9 @@ M8Tape.pak/use_ram
 
 # Prises enregistrées
 M8Tape.pak/rec_*/
+
+# Sorties de compilation m8split (le source et build.sh sont suivis)
+m8split-src/m8split
+m8split-src/m8split-native
+m8split-src/test_*.wav
+m8split-src/test_out/

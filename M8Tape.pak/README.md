@@ -38,9 +38,10 @@ after a successful split.
    | Binary | Purpose | Source |
    |---|---|---|
    | `minui-list` | native menu | [josegonzalez/minui-list releases](https://github.com/josegonzalez/minui-list/releases/latest), `tg5040` asset |
-   | `m8split` | 24ch → 12 stereo split | build from `m8split-rs` source |
+   | `m8split` | 24ch → 12 stereo split | build from source — see [`m8split-src/BUILD.md`](m8split-src/BUILD.md) |
 
-   These binaries are not included in the repository.
+   These binaries are not committed to the repository. `m8split` is built from
+   the included C source with a single `zig` command (see below).
 3. Run `chmod +x` on `launch.sh` and both binaries.
 
 ## Usage
@@ -65,7 +66,8 @@ visit.
 - **Scheduling**: elevated process priority (`nice -n -19`) and large
   `arecord` buffers.
 - **Split**: via `m8split` if present, otherwise `sox`; if neither is
-  available, the raw 24-channel WAV is kept intact.
+  available, the raw 24-channel WAV is kept intact. `m8split` is a small static
+  binary built from [`m8split-src/`](m8split-src/) — see its `BUILD.md`.
 
 ### Recording modes
 
@@ -119,5 +121,7 @@ M8Tape.pak/
   launch.sh   capture, USB tuning, split, fallbacks
   pak.json    NextUI label
   README.md   on-device copy of this document
-  bin/tg5040/ place minui-list and m8split here (not included)
+  bin/tg5040/ place minui-list and m8split here (not committed)
+m8split-src/  m8split C source, build script and BUILD.md
+split_m8.sh   desktop splitter (ffmpeg/sox)
 ```

@@ -10,7 +10,7 @@ Depose ici les binaires compiles pour tg5040 (la TrimUI Brick) :
    Sans lui : pak en mode bascule, sans menu.
 
 2) m8split :
-   compile la source fournie (dossier m8split-rs), voir le README du pak.
+   compile la source fournie (dossier m8split-src), voir le README du pak.
    chmod +x.
    Sans lui : si sox est present sur l'appareil il est utilise a la place ;
    sinon le WAV 24 canaux brut est conserve, non decoupe.
