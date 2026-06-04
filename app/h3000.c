@@ -7,21 +7,42 @@
 #include <string.h>
 #include <math.h>
 
+const char *h3000_splice_name(int mode) {
+    switch (mode) {
+        case SPLICE_H910:   return "H910";
+        case SPLICE_H949_1: return "H949-1";
+        case SPLICE_H949_2: return "H949-2";
+        case SPLICE_MODERN: return "MODERN";
+        default:            return "H910";
+    }
+}
+
 // --- time-domain pitch voice -------------------------------------------------
+// 2-tap moving delay line + crossfade (a faithful port of the Faust `transpose`:
+// taps at delay base+d and base+d+P, gains min(d/x,1) and 1-min(d/x,1), with d
+// ramping by (1-ratio) per sample and wrapping at the window P). H910 keeps P
+// fixed; the H949/Modern modes re-pick P at every splice by normalized
+// cross-correlation so the two crossfaded taps are phase-aligned (de-glitch).
 typedef struct {
     float *buf;
     int    n;
     int    wr;
-    float  phase;   // sawtooth 0..w
-    float  w, x;    // window, crossfade (samples)
-    float  ratio;   // 2^(cents/1200) — updated live each block
+    float  phase;          // ramp 0..P
+    float  rate;
+    float  base;           // fixed read base (samples) — keeps reads off wr
+    float  Wmax;           // max window / search ceiling (samples)
+    float  P;              // current window = splice interval (samples), adaptive
+    float  Pmin, Pmax;     // de-glitch period search bounds (samples)
+    float  x;              // crossfade length (samples)
+    float  ratio;          // 2^(cents/1200) — updated live each block
+    int    splice;         // SpliceMode
+    int    deglitch;       // derived: 0 for H910, 1 otherwise
+    float  corrL;          // correlation window (samples)
+    int    corrStep;       // lag step for the period search
+    float  driftDepth;     // LC-clock drift depth (cents); 0 = none
+    float  lfo1, lfo2, dlfo1, dlfo2;  // two slow incommensurate drift LFOs
 } PitchVoice;
 
-static float wrapf(float v, float m) {
-    while (v >= m) v -= m;
-    while (v < 0)  v += m;
-    return v;
-}
 static float pv_read(const PitchVoice *v, float delay) {
     float pos = (float)v->wr - delay;
     while (pos < 0) pos += v->n;
@@ -30,11 +51,83 @@ static float pv_read(const PitchVoice *v, float delay) {
     int i1 = i0 + 1; if (i1 >= v->n) i1 -= v->n;
     return v->buf[i0] * (1.0f - frac) + v->buf[i1] * frac;
 }
+// integer-delay tap, for the correlation search
+static float pv_at(const PitchVoice *v, int delay) {
+    int pos = v->wr - delay;
+    while (pos < 0)     pos += v->n;
+    while (pos >= v->n) pos -= v->n;
+    return v->buf[pos];
+}
+// configure the splice character (cheap; called per block so the UI can change
+// the mode live). H910 forces the fixed window; the rest leave P adaptive.
+static void pv_set_mode(PitchVoice *v, int splice) {
+    v->splice = splice;
+    float r = v->rate;
+    switch (splice) {
+        case SPLICE_H949_1:
+            v->deglitch = 1; v->x = 0.012f * r; v->corrL = 0.006f * r; v->corrStep = 6; v->driftDepth = 1.0f; break;
+        case SPLICE_H949_2:
+            v->deglitch = 1; v->x = 0.016f * r; v->corrL = 0.009f * r; v->corrStep = 3; v->driftDepth = 0.0f; break;
+        case SPLICE_MODERN:
+            v->deglitch = 1; v->x = 0.020f * r; v->corrL = 0.012f * r; v->corrStep = 2; v->driftDepth = 0.0f; break;
+        case SPLICE_H910:
+        default:
+            v->deglitch = 0; v->x = 0.012f * r; v->driftDepth = 3.0f; v->P = v->Wmax; break;
+    }
+}
+// de-glitch: pick the splice interval P in [Pmin,Pmax] that maximizes the
+// normalized cross-correlation between the buffer segment the incoming tap will
+// read (around `base`) and the one the outgoing tap reads (around `base+P`).
+// That lands the splice on a near-integer number of pitch periods, so the two
+// crossfaded copies are nearly identical → minimal cancellation.
+static float pv_best_period(const PitchVoice *v) {
+    int b = (int)v->base;
+    int L = (int)v->corrL; if (L < 16) L = 16;
+    int lo = (int)v->Pmin, hi = (int)v->Pmax;
+    int step = v->corrStep > 0 ? v->corrStep : 1;
+    int best = (int)v->P; float bestScore = -1e30f;
+    for (int P = lo; P <= hi; P += step) {
+        float dot = 0, e1 = 0, e2 = 0;
+        for (int k = 0; k < L; k++) {
+            float a = pv_at(v, b + k);
+            float c = pv_at(v, b + P + k);
+            dot += a * c; e1 += a * a; e2 += c * c;
+        }
+        float score = dot / (sqrtf(e1 * e2) + 1e-9f);
+        if (score > bestScore) { bestScore = score; best = P; }
+    }
+    // refine to single-sample resolution around the coarse winner
+    int rlo = best - step, rhi = best + step;
+    if (rlo < lo) rlo = lo;
+    if (rhi > hi) rhi = hi;
+    for (int P = rlo; P <= rhi; P++) {
+        float dot = 0, e1 = 0, e2 = 0;
+        for (int k = 0; k < L; k++) {
+            float a = pv_at(v, b + k);
+            float c = pv_at(v, b + P + k);
+            dot += a * c; e1 += a * a; e2 += c * c;
+        }
+        float score = dot / (sqrtf(e1 * e2) + 1e-9f);
+        if (score > bestScore) { bestScore = score; best = P; }
+    }
+    return (float)best;
+}
 static void pv_init(PitchVoice *v, float rate) {
-    v->w = 0.050f * rate;
-    v->x = 0.012f * rate;
+    v->rate = rate;
+    v->Wmax = 0.050f * rate;
+    v->base = v->Wmax;          // read well behind wr; constant buffer geometry
+    v->Pmin = 0.005f * rate;    // 5..50 ms period search (per the H949 patent)
+    v->Pmax = v->Wmax;
+    v->P    = v->Wmax;
+    v->x    = 0.012f * rate;
     v->ratio = 1.0f;
-    v->n = (int)(v->w * 3.0f) + 64;
+    v->corrL = 0.008f * rate; v->corrStep = 4;
+    v->splice = SPLICE_H910; v->deglitch = 0; v->driftDepth = 0.0f;
+    v->lfo1 = 0.0f; v->lfo2 = 0.0f;
+    v->dlfo1 = 2.0f * (float)M_PI * 0.7f / rate;   // ~0.7 Hz
+    v->dlfo2 = 2.0f * (float)M_PI * 3.1f / rate;   // ~3.1 Hz (incommensurate)
+    // max access = base + 2*Pmax (read taps) and base + Pmax + corrL (search)
+    v->n = (int)(v->base + 2.0f * v->Pmax + 0.012f * rate) + 256;
     v->buf = calloc(v->n, sizeof(float));
     v->wr = 0; v->phase = 0.0f;
 }
@@ -42,14 +135,31 @@ static void pv_free(PitchVoice *v) { free(v->buf); v->buf = NULL; }
 static float pv_process(PitchVoice *v, float in) {
     v->buf[v->wr] = in;
     v->wr++; if (v->wr >= v->n) v->wr = 0;
+
     float d = v->phase;
-    float base = v->w;
-    float s1 = pv_read(v, base + d);
-    float s2 = pv_read(v, base + d + v->w);
-    float g = d / v->x; if (g > 1.0f) g = 1.0f;
+    float xeff = v->x;                         // crossfade must fit inside P
+    if (xeff > 0.45f * v->P) xeff = 0.45f * v->P;
+    if (xeff < 1.0f) xeff = 1.0f;
+    float s1 = pv_read(v, v->base + d);          // incoming tap (closer)
+    float s2 = pv_read(v, v->base + d + v->P);   // outgoing tap (one window back)
+    float g = d / xeff; if (g > 1.0f) g = 1.0f; if (g < 0.0f) g = 0.0f;
     float out = g * s1 + (1.0f - g) * s2;
-    v->phase += (1.0f - v->ratio);
-    v->phase = wrapf(v->phase, v->w);
+
+    float ratio = v->ratio;
+    if (v->driftDepth > 0.0f) {                 // LC-clock drift (H910 character)
+        float cents = v->driftDepth * (0.6f * sinf(v->lfo1) + 0.4f * sinf(v->lfo2));
+        ratio *= powf(2.0f, cents / 1200.0f);
+        v->lfo1 += v->dlfo1; if (v->lfo1 > 6.2831853f) v->lfo1 -= 6.2831853f;
+        v->lfo2 += v->dlfo2; if (v->lfo2 > 6.2831853f) v->lfo2 -= 6.2831853f;
+    }
+    v->phase += (1.0f - ratio);
+    if (v->phase >= v->P) {                     // splice (downshift)
+        v->phase -= v->P;
+        if (v->deglitch) v->P = pv_best_period(v);
+    } else if (v->phase < 0.0f) {               // splice (upshift)
+        if (v->deglitch) v->P = pv_best_period(v);
+        v->phase += v->P;
+    }
     return out;
 }
 
@@ -98,6 +208,9 @@ void mp_destroy(MicroPitchState *st) {
 // process n mono frames -> n stereo frames, reading params live each call.
 void mp_block(MicroPitchState *st, const float *dry, int n,
               const MicroPitchParams *p, float *outLR) {
+    int sp = p->splice; if (sp < 0) sp = 0; if (sp >= SPLICE_COUNT) sp = SPLICE_COUNT - 1;
+    pv_set_mode(&st->va, sp);
+    pv_set_mode(&st->vb, sp);
     st->va.ratio = powf(2.0f, p->cents_a / 1200.0f);
     st->vb.ratio = powf(2.0f, p->cents_b / 1200.0f);
     float fb = p->feedback; if (fb < 0) fb = 0; if (fb > 0.95f) fb = 0.95f;

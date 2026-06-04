@@ -599,7 +599,8 @@ int main(int argc, char *argv[]) {
 
     // H3000 MicroPitch params + cursor
     MicroPitchParams mp = {.cents_a = -9, .delay_a_ms = 15, .cents_b = 11,
-                           .delay_b_ms = 25, .feedback = 0.0f, .mix = 0.5f};
+                           .delay_b_ms = 25, .feedback = 0.0f, .mix = 0.5f,
+                           .splice = SPLICE_H910};
     int h_sel = 0;
 
     while (!quitting) {
@@ -837,7 +838,7 @@ int main(int argc, char *argv[]) {
             redraw = 1;
         } else if (mode == M_H3000) {
             if (NAV(BTN_UP))   { if (h_sel > 0) h_sel--; }
-            if (NAV(BTN_DOWN)) { if (h_sel < 5) h_sel++; }
+            if (NAV(BTN_DOWN)) { if (h_sel < 6) h_sel++; }
             int dl = NAV(BTN_RIGHT) ? 1 : NAV(BTN_LEFT) ? -1 : 0;
             if (dl) {
                 switch (h_sel) {
@@ -847,6 +848,7 @@ int main(int argc, char *argv[]) {
                     case 3: mp.delay_b_ms += dl * 5; if (mp.delay_b_ms < 0) mp.delay_b_ms = 0; if (mp.delay_b_ms > 1000) mp.delay_b_ms = 1000; break;
                     case 4: mp.feedback += dl * 0.05f; if (mp.feedback < 0) mp.feedback = 0; if (mp.feedback > 0.95f) mp.feedback = 0.95f; break;
                     case 5: mp.mix += dl * 0.05f; if (mp.mix < 0) mp.mix = 0; if (mp.mix > 1) mp.mix = 1; break;
+                    case 6: mp.splice += dl; if (mp.splice < 0) mp.splice = SPLICE_COUNT - 1; if (mp.splice >= SPLICE_COUNT) mp.splice = 0; break;
                 }
             }
             if (g_pv_active && g_pv_shm) g_pv_shm->params = mp;   // live: tweak heard now
@@ -966,9 +968,9 @@ int main(int argc, char *argv[]) {
                 snprintf(a3, sizeof(a3), "%d MS", (int)mp.delay_b_ms);
                 snprintf(a4, sizeof(a4), "%d%%", (int)(mp.feedback * 100));
                 snprintf(a5, sizeof(a5), "%d%%", (int)(mp.mix * 100));
-                const char *hl[6] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX"};
-                const char *hv[6] = {a0, a1, a2, a3, a4, a5};
-                ui_draw_fx(&ui, screen, "MICROPITCH", hl, hv, 6, h_sel, g_pv_active);
+                const char *hl[7] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX", "SPLICE"};
+                const char *hv[7] = {a0, a1, a2, a3, a4, a5, h3000_splice_name(mp.splice)};
+                ui_draw_fx(&ui, screen, "MICROPITCH", hl, hv, 7, h_sel, g_pv_active);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }

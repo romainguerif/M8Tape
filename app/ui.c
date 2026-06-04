@@ -339,7 +339,9 @@ void ui_draw_fx(UI *ui, SDL_Surface *s, const char *algo,
     }
     fillc(s, MARGIN, 96, s->w - 2 * MARGIN, 2, C_HAIR);
 
-    int top = 150, rowh = 84;
+    int top = 130;
+    int rowh = (s->h - 92 - top) / (count > 0 ? count : 1);   // fit above footer
+    if (rowh > 84) rowh = 84;
     for (int i = 0; i < count; i++) {
         int y = top + i * rowh;
         if (i == sel) {

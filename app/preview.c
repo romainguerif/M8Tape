@@ -34,9 +34,9 @@ int main(void) {
     ui_draw_settings(&ui, s, "SETTINGS", sl, sv, 4, 1);
     save(s, "out_settings.bmp");
 
-    const char *hl[6] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX"};
-    const char *hv[6] = {"-9 CENTS", "15 MS", "+11 CENTS", "25 MS", "0%", "50%"};
-    ui_draw_fx(&ui, s, "MICROPITCH", hl, hv, 6, 0, 1);
+    const char *hl[7] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX", "SPLICE"};
+    const char *hv[7] = {"-9 CENTS", "15 MS", "+11 CENTS", "25 MS", "0%", "50%", "H910"};
+    ui_draw_fx(&ui, s, "MICROPITCH", hl, hv, 7, 0, 1);
     save(s, "out_fx.bmp");
 
     ui_draw_keyboard(&ui, s, "NAME SAMPLE", "rain_forest", 0, 1, 3);
