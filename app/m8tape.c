@@ -450,7 +450,8 @@ static long g_pk_vs = -1, g_pk_span = -1; // peak cache key (view start/span)
 // an mmap'd shared region so the UI can tweak parameters in real time.
 typedef struct {
     volatile int stop;
-    MicroPitchParams params;   // updated live by the UI
+    int algo;                       // index into h3k_algos
+    float params[H3K_MAX_PARAMS];   // updated live by the UI
     int frames;
     int rate;
     // mono source floats follow immediately after this struct in the mapping
@@ -461,7 +462,7 @@ static pid_t g_pv_pid = 0;
 static PvShared *g_pv_shm = NULL;
 static size_t g_pv_size = 0;
 
-// runs in the child: opens ALSA, loops the source through MicroPitch, reading
+// runs in the child: opens ALSA, loops the source through the chosen algo, reading
 // live params from shared memory. Never returns (calls _exit).
 static void pv_child(PvShared *shm) {
     float *src = (float *)((char *)shm + sizeof(PvShared));
@@ -474,7 +475,7 @@ static void pv_child(PvShared *shm) {
         else { if (pcm) { snd_pcm_close(pcm); pcm = NULL; } usleep(50000); }
     }
     if (!ok) _exit(1);
-    MicroPitchState *st = mp_create(shm->rate);
+    H3kEngine *st = h3k_create(shm->algo, shm->rate);
     if (!st) { snd_pcm_close(pcm); _exit(1); }
     enum { BLK = 512 };
     float dry[BLK], out[BLK * 2];
@@ -483,8 +484,9 @@ static void pv_child(PvShared *shm) {
     while (!shm->stop) {
         if (getppid() == 1) break;                 // parent gone → don't orphan
         for (int i = 0; i < BLK; i++) { dry[i] = src[pos]; if (++pos >= shm->frames) pos = 0; }
-        MicroPitchParams p = shm->params;          // live snapshot
-        mp_block(st, dry, BLK, &p, out);
+        float p[H3K_MAX_PARAMS];
+        for (int k = 0; k < H3K_MAX_PARAMS; k++) p[k] = shm->params[k];   // live snapshot
+        h3k_block(st, dry, BLK, p, out);
         for (int i = 0; i < BLK * 2; i++) {
             float v = out[i]; if (v > 1) v = 1; if (v < -1) v = -1;
             s16[i] = (short)(v * 32767);
@@ -492,7 +494,7 @@ static void pv_child(PvShared *shm) {
         snd_pcm_sframes_t w = snd_pcm_writei(pcm, s16, BLK);
         if (w < 0) snd_pcm_recover(pcm, (int)w, 1);
     }
-    mp_destroy(st);
+    h3k_destroy(st);
     snd_pcm_drain(pcm);
     snd_pcm_close(pcm);
     _exit(0);
@@ -518,7 +520,7 @@ static void reap_preview(void) {
         }
     }
 }
-static void preview_start(const Audio *a, const MicroPitchParams *p0) {
+static void preview_start(const Audio *a, int algo, const float *params) {
     if (g_pv_active || !a->data || a->frames < 1) return;
     stop_play();                                   // free the device for the child
     long F = a->frames;
@@ -527,7 +529,8 @@ static void preview_start(const Audio *a, const MicroPitchParams *p0) {
     if (shm == MAP_FAILED) return;
     shm->stop = 0; shm->frames = (int)F;
     shm->rate = a->rate > 0 ? a->rate : 48000;
-    shm->params = *p0;
+    shm->algo = algo;
+    for (int k = 0; k < H3K_MAX_PARAMS; k++) shm->params[k] = params[k];
     float *src = (float *)((char *)shm + sizeof(PvShared));
     for (long i = 0; i < F; i++) {
         float s = 0;
@@ -545,7 +548,7 @@ static void preview_start(const Audio *a, const MicroPitchParams *p0) {
 }
 
 // --- app --------------------------------------------------------------------
-enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS, M_H3000 };
+enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS, M_FX_PICK, M_H3000 };
 enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
 
 #define NAV(b) (PAD_justPressed(b) || PAD_justRepeated(b))
@@ -597,11 +600,11 @@ int main(int argc, char *argv[]) {
     time_t last_sound = 0;
     int edit_accel = 0;   // editor cursor acceleration (frames held)
 
-    // H3000 MicroPitch params + cursor
-    MicroPitchParams mp = {.cents_a = -9, .delay_a_ms = 15, .cents_b = 11,
-                           .delay_b_ms = 25, .feedback = 0.0f, .mix = 0.5f,
-                           .splice = SPLICE_H910};
-    int h_sel = 0;
+    // H3000 FX: current algorithm + its live params + cursors
+    int   fx_algo = 0;
+    float fx_params[H3K_MAX_PARAMS] = {0};
+    int   h_sel = 0;                            // selected param row in FX screen
+    int   fx_pick_sel = 0, fx_pick_scroll = 0;  // algorithm picker list
 
     while (!quitting) {
         GFX_startFrame();
@@ -811,7 +814,7 @@ int main(int argc, char *argv[]) {
             if (PAD_justPressed(BTN_A)) {
                 const char *op = EMENU[emenu_sel];
                 int back = 1;
-                if (!strcmp(op, "H3000 FX")) { h_sel = 0; stop_play(); mode = M_H3000; back = -1; }
+                if (!strcmp(op, "H3000 FX")) { fx_pick_sel = 0; fx_pick_scroll = 0; stop_play(); mode = M_FX_PICK; back = -1; }
                 else if (!strcmp(op, "NORMALIZE")) au_normalize(&g_au);
                 else if (!strcmp(op, "GAIN +1 DB")) au_gain_db(&g_au, g_in, g_out, 1.0f);
                 else if (!strcmp(op, "GAIN -1 DB")) au_gain_db(&g_au, g_in, g_out, -1.0f);
@@ -836,36 +839,42 @@ int main(int argc, char *argv[]) {
                 else if (back == 0) { g_wave_dirty = 1; mode = M_EDIT; }
             }
             redraw = 1;
-        } else if (mode == M_H3000) {
-            if (NAV(BTN_UP))   { if (h_sel > 0) h_sel--; }
-            if (NAV(BTN_DOWN)) { if (h_sel < 6) h_sel++; }
-            int dl = NAV(BTN_RIGHT) ? 1 : NAV(BTN_LEFT) ? -1 : 0;
-            if (dl) {
-                switch (h_sel) {
-                    case 0: mp.cents_a += dl; if (mp.cents_a < -50) mp.cents_a = -50; if (mp.cents_a > 50) mp.cents_a = 50; break;
-                    case 1: mp.delay_a_ms += dl * 5; if (mp.delay_a_ms < 0) mp.delay_a_ms = 0; if (mp.delay_a_ms > 1000) mp.delay_a_ms = 1000; break;
-                    case 2: mp.cents_b += dl; if (mp.cents_b < -50) mp.cents_b = -50; if (mp.cents_b > 50) mp.cents_b = 50; break;
-                    case 3: mp.delay_b_ms += dl * 5; if (mp.delay_b_ms < 0) mp.delay_b_ms = 0; if (mp.delay_b_ms > 1000) mp.delay_b_ms = 1000; break;
-                    case 4: mp.feedback += dl * 0.05f; if (mp.feedback < 0) mp.feedback = 0; if (mp.feedback > 0.95f) mp.feedback = 0.95f; break;
-                    case 5: mp.mix += dl * 0.05f; if (mp.mix < 0) mp.mix = 0; if (mp.mix > 1) mp.mix = 1; break;
-                    case 6: mp.splice += dl; if (mp.splice < 0) mp.splice = SPLICE_COUNT - 1; if (mp.splice >= SPLICE_COUNT) mp.splice = 0; break;
-                }
+        } else if (mode == M_FX_PICK) {
+            int mvis = ui_menu_visible_rows(screen);
+            if (NAV(BTN_UP))   { if (fx_pick_sel > 0) fx_pick_sel--; }
+            if (NAV(BTN_DOWN)) { if (fx_pick_sel < h3k_algo_count - 1) fx_pick_sel++; }
+            if (fx_pick_sel < fx_pick_scroll) fx_pick_scroll = fx_pick_sel;
+            if (fx_pick_sel >= fx_pick_scroll + mvis) fx_pick_scroll = fx_pick_sel - mvis + 1;
+            if (PAD_justPressed(BTN_A)) {                 // choose this algorithm
+                fx_algo = fx_pick_sel;
+                h3k_defaults(fx_algo, fx_params);
+                h_sel = 0;
+                mode = M_H3000;
             }
-            if (g_pv_active && g_pv_shm) g_pv_shm->params = mp;   // live: tweak heard now
+            if (PAD_justPressed(BTN_B)) mode = M_EDIT;
+            redraw = 1;
+        } else if (mode == M_H3000) {
+            const H3kAlgoDef *def = h3k_algos[fx_algo];
+            if (NAV(BTN_UP))   { if (h_sel > 0) h_sel--; }
+            if (NAV(BTN_DOWN)) { if (h_sel < def->nparams - 1) h_sel++; }
+            int dl = NAV(BTN_RIGHT) ? 1 : NAV(BTN_LEFT) ? -1 : 0;
+            if (dl) fx_params[h_sel] = h3k_adjust(&def->params[h_sel], fx_params[h_sel], dl);
+            if (g_pv_active && g_pv_shm)                  // live: tweak heard now
+                for (int k = 0; k < H3K_MAX_PARAMS; k++) g_pv_shm->params[k] = fx_params[k];
             if (PAD_justPressed(BTN_A)) {                 // toggle real-time looped preview
                 if (g_pv_active) preview_stop();
-                else preview_start(&g_au, &mp);
+                else preview_start(&g_au, fx_algo, fx_params);
             }
             if (PAD_justPressed(BTN_START)) {             // RENDER (destructive)
                 preview_stop();
-                if (h3000_micropitch(&g_au, &mp) == 0) {
+                if (h3k_render(&g_au, fx_algo, fx_params) == 0) {
                     g_modified = 1; g_wave_dirty = 1;
                     g_view_span = g_au.frames;
                     if (g_out > g_au.frames) g_out = g_au.frames;
                 }
                 mode = M_EDIT;
             }
-            if (PAD_justPressed(BTN_B)) { preview_stop(); mode = M_EDIT; }
+            if (PAD_justPressed(BTN_B)) { preview_stop(); mode = M_FX_PICK; }   // back to picker to switch
             redraw = 1;
         } else if (mode == M_SETTINGS) {
             if (NAV(BTN_UP))   { if (set_sel > 0) set_sel--; }
@@ -960,17 +969,22 @@ int main(int argc, char *argv[]) {
                                           "AUTO-STOP ON SILENCE", "AUTO-STOP AFTER"};
                 const char *svalues[4] = {v0, v1, v2, v3};
                 ui_draw_settings(&ui, screen, "SETTINGS", slabels, svalues, 4, set_sel);
+            } else if (mode == M_FX_PICK) {
+                const char *names[32];
+                int nn = h3k_algo_count; if (nn > 32) nn = 32;
+                for (int i = 0; i < nn; i++) names[i] = h3k_algos[i]->name;
+                ui_draw_menu(&ui, screen, "H3000 FX", names, nn, fx_pick_sel, fx_pick_scroll);
             } else if (mode == M_H3000) {
-                char a0[16], a1[16], a2[16], a3[16], a4[16], a5[16];
-                snprintf(a0, sizeof(a0), "%+d CENTS", (int)mp.cents_a);
-                snprintf(a1, sizeof(a1), "%d MS", (int)mp.delay_a_ms);
-                snprintf(a2, sizeof(a2), "%+d CENTS", (int)mp.cents_b);
-                snprintf(a3, sizeof(a3), "%d MS", (int)mp.delay_b_ms);
-                snprintf(a4, sizeof(a4), "%d%%", (int)(mp.feedback * 100));
-                snprintf(a5, sizeof(a5), "%d%%", (int)(mp.mix * 100));
-                const char *hl[7] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX", "SPLICE"};
-                const char *hv[7] = {a0, a1, a2, a3, a4, a5, h3000_splice_name(mp.splice)};
-                ui_draw_fx(&ui, screen, "MICROPITCH", hl, hv, 7, h_sel, g_pv_active);
+                const H3kAlgoDef *def = h3k_algos[fx_algo];
+                char vbuf[H3K_MAX_PARAMS][24];
+                const char *hl[H3K_MAX_PARAMS];
+                const char *hv[H3K_MAX_PARAMS];
+                for (int i = 0; i < def->nparams; i++) {
+                    hl[i] = def->params[i].label;
+                    h3k_format(&def->params[i], fx_params[i], vbuf[i], sizeof(vbuf[i]));
+                    hv[i] = vbuf[i];
+                }
+                ui_draw_fx(&ui, screen, def->name, hl, hv, def->nparams, h_sel, g_pv_active);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }

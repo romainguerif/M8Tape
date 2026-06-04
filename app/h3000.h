@@ -1,52 +1,67 @@
 // h3000.h - Eventide H3000-style DSP engine for M8Tape Studio.
-// Faithful to the hardware's mono-program model: one pass = one algorithm,
-// rendered destructively on the sample. First algorithm: MicroPitch.
+// Faithful to the hardware's mono-program model: one pass = ONE algorithm,
+// rendered destructively. This header is the GENERIC ENGINE: every algorithm is
+// an H3kAlgoDef (a name + a parameter spec + create/block/destroy) registered in
+// a table. The UI, the real-time preview child and the whole-sample render all
+// drive any algorithm through this one interface — add an effect by adding a
+// module, never by touching the plumbing.
 #ifndef H3000_H
 #define H3000_H
 
 #include "wav.h"   // Audio
 
-// --- splice character (pitch-shift de-glitch) --------------------------------
-// The H3000's pitch core reads a delay line with two taps a window apart and
-// crossfades at the splice. WHERE the splice lands defines the grain:
-//   H910   = no de-glitch, fixed window + LC-clock drift (the 1975 character).
-//   H949-1 = autocorrelation de-glitch (1977 ALG-3): the splice interval is
-//            chosen by normalized cross-correlation so the incoming tap is in
-//            phase with the outgoing one during the crossfade (least cancellation).
-//   H949-2 = de-glitch with a longer correlation window + crossfade (smoother).
-//   MODERN = finest de-glitch search + longest crossfade (cleanest).
-// These mirror the four Splice Types Eventide exposes in the modern H90's Pitch
-// algorithm. The exact #1/#2/Modern internals were never published — modeled
-// here from function (search resolution, crossfade length, drift), not specs.
+#define H3K_MAX_PARAMS 12
+
+// How a parameter's float value is interpreted / displayed / stepped.
 typedef enum {
-    SPLICE_H910 = 0,
-    SPLICE_H949_1,
-    SPLICE_H949_2,
-    SPLICE_MODERN,
-    SPLICE_COUNT
-} SpliceMode;
-const char *h3000_splice_name(int mode);
+    PK_FLOAT,    // raw "%.2f"
+    PK_INT,      // "%d"
+    PK_CENTS,    // "%+d CENTS"
+    PK_SEMI,     // "%+d ST"  (semitones)
+    PK_MS,       // "%d MS"
+    PK_PERCENT,  // value 0..1 shown "%d%%"
+    PK_HZ,       // "%d HZ"
+    PK_DB,       // "%+d DB"
+    PK_CHOICE    // discrete: value = index into `choices`
+} ParamKind;
 
-// --- MicroPitch: two finely-detuned pitch voices, delayed, panned L/R --------
 typedef struct {
-    float cents_a, delay_a_ms;   // voice A → left
-    float cents_b, delay_b_ms;   // voice B → right
-    float feedback;              // 0..0.95 (per voice)
-    float mix;                   // 0..1 dry/wet
-    int   splice;                // SpliceMode — shared by both voices
-} MicroPitchParams;
+    const char *label;            // UI row label, e.g. "PITCH A (L)"
+    float min, max, step, def;    // range, step per left/right press, default
+    ParamKind kind;
+    const char *const *choices;   // PK_CHOICE only: NULL-terminated name list
+} ParamSpec;
 
-// Render MicroPitch over the whole sample, destructively. The result is stereo
+// One algorithm. `block` reads `nparams` floats from `p` (same order as
+// `params[]`), consumes `n` mono `dry` samples and writes `n` interleaved-stereo
+// frames to `outLR`. State is whatever `create` returns. Params are read live so
+// the preview hears edits immediately.
+typedef struct {
+    const char *name;
+    int nparams;
+    ParamSpec params[H3K_MAX_PARAMS];
+    void *(*create)(int rate);
+    void  (*block)(void *st, const float *dry, int n, const float *p, float *outLR);
+    void  (*destroy)(void *st);
+} H3kAlgoDef;
+
+// --- algorithm registry (defined in h3000.c) --------------------------------
+extern const H3kAlgoDef *const h3k_algos[];
+extern const int h3k_algo_count;
+
+// --- generic streaming engine (for the real-time preview child) -------------
+typedef struct H3kEngine H3kEngine;
+H3kEngine *h3k_create(int algo, int rate);
+void       h3k_block(H3kEngine *e, const float *dry, int n, const float *params, float *outLR);
+void       h3k_destroy(H3kEngine *e);
+
+// --- whole-sample destructive render (file -> file). Result is stereo --------
 // (a->ch becomes 2; mono input is upmixed by the effect). Returns 0 on success.
-int h3000_micropitch(Audio *a, const MicroPitchParams *p);
+int h3k_render(Audio *a, int algo, const float *params);
 
-// --- streaming core (for real-time preview) ---------------------------------
-typedef struct MicroPitchState MicroPitchState;
-MicroPitchState *mp_create(int rate);
-void mp_destroy(MicroPitchState *st);
-// n mono frames in `dry` -> n interleaved-stereo frames in `outLR`; params read
-// live (call repeatedly with persistent state for a continuous stream).
-void mp_block(MicroPitchState *st, const float *dry, int n,
-              const MicroPitchParams *p, float *outLR);
+// --- UI helpers (keep the FX screen dumb & generic) -------------------------
+void  h3k_defaults(int algo, float *params);              // fill with spec defaults
+float h3k_adjust(const ParamSpec *ps, float v, int dir);  // step/clamp/choice-wrap
+void  h3k_format(const ParamSpec *ps, float v, char *out, int outsz);
 
 #endif
