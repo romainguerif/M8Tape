@@ -29,6 +29,7 @@
 #include "ui.h"
 #include "wav.h"
 #include "player.h"
+#include "h3000.h"
 
 // --- detected input ---------------------------------------------------------
 struct Input {
@@ -442,7 +443,7 @@ static long g_view_span;               // visible frames (zoom)
 static long g_pk_vs = -1, g_pk_span = -1; // peak cache key (view start/span)
 
 // --- app --------------------------------------------------------------------
-enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS };
+enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS, M_H3000 };
 enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
 
 #define NAV(b) (PAD_justPressed(b) || PAD_justRepeated(b))
@@ -482,16 +483,21 @@ int main(int argc, char *argv[]) {
     char move_from[1024] = {0}, move_name[256] = {0};
 
     // editor ops menu
-    static const char *EMENU[] = {"NORMALIZE", "GAIN +1 DB", "GAIN -1 DB",
+    static const char *EMENU[] = {"H3000 FX", "NORMALIZE", "GAIN +1 DB", "GAIN -1 DB",
         "FADE IN", "FADE OUT", "LOOP XFADE", "REVERSE", "HIGH-PASS",
         "TRIM TO SELECTION", "TRIM SILENCE", "TO MONO", "16-BIT", "HALF RATE",
         "SAVE", "SAVE AS", "EXIT"};
-    const int EMENU_N = 16;
+    const int EMENU_N = 17;
     int emenu_sel = 0, emenu_scroll = 0;
 
     // recording level / auto-stop, settings cursor
     int lvlctr = 0, set_sel = 0;
     time_t last_sound = 0;
+
+    // H3000 MicroPitch params + cursor
+    MicroPitchParams mp = {.cents_a = -9, .delay_a_ms = 15, .cents_b = 11,
+                           .delay_b_ms = 25, .feedback = 0.0f, .mix = 0.5f};
+    int h_sel = 0;
 
     while (!quitting) {
         GFX_startFrame();
@@ -690,7 +696,8 @@ int main(int argc, char *argv[]) {
             if (PAD_justPressed(BTN_A)) {
                 const char *op = EMENU[emenu_sel];
                 int back = 1;
-                if (!strcmp(op, "NORMALIZE")) au_normalize(&g_au);
+                if (!strcmp(op, "H3000 FX")) { h_sel = 0; stop_play(); mode = M_H3000; back = -1; }
+                else if (!strcmp(op, "NORMALIZE")) au_normalize(&g_au);
                 else if (!strcmp(op, "GAIN +1 DB")) au_gain_db(&g_au, g_in, g_out, 1.0f);
                 else if (!strcmp(op, "GAIN -1 DB")) au_gain_db(&g_au, g_in, g_out, -1.0f);
                 else if (!strcmp(op, "FADE IN")) au_fade_in(&g_au, g_in, g_out);
@@ -713,6 +720,44 @@ int main(int argc, char *argv[]) {
                 if (back == 1) { g_modified = 1; g_wave_dirty = 1; mode = M_EDIT; }
                 else if (back == 0) { g_wave_dirty = 1; mode = M_EDIT; }
             }
+            redraw = 1;
+        } else if (mode == M_H3000) {
+            if (NAV(BTN_UP))   { if (h_sel > 0) h_sel--; }
+            if (NAV(BTN_DOWN)) { if (h_sel < 5) h_sel++; }
+            int dl = NAV(BTN_RIGHT) ? 1 : NAV(BTN_LEFT) ? -1 : 0;
+            if (dl) {
+                switch (h_sel) {
+                    case 0: mp.cents_a += dl; if (mp.cents_a < -50) mp.cents_a = -50; if (mp.cents_a > 50) mp.cents_a = 50; break;
+                    case 1: mp.delay_a_ms += dl * 5; if (mp.delay_a_ms < 0) mp.delay_a_ms = 0; if (mp.delay_a_ms > 1000) mp.delay_a_ms = 1000; break;
+                    case 2: mp.cents_b += dl; if (mp.cents_b < -50) mp.cents_b = -50; if (mp.cents_b > 50) mp.cents_b = 50; break;
+                    case 3: mp.delay_b_ms += dl * 5; if (mp.delay_b_ms < 0) mp.delay_b_ms = 0; if (mp.delay_b_ms > 1000) mp.delay_b_ms = 1000; break;
+                    case 4: mp.feedback += dl * 0.05f; if (mp.feedback < 0) mp.feedback = 0; if (mp.feedback > 0.95f) mp.feedback = 0.95f; break;
+                    case 5: mp.mix += dl * 0.05f; if (mp.mix < 0) mp.mix = 0; if (mp.mix > 1) mp.mix = 1; break;
+                }
+            }
+            if (PAD_justPressed(BTN_A)) {                 // A/B preview
+                if (g_play_pid > 0) stop_play();
+                else {
+                    Audio c = g_au;
+                    c.data = malloc((size_t)g_au.frames * g_au.ch * sizeof(float));
+                    if (c.data) {
+                        memcpy(c.data, g_au.data, (size_t)g_au.frames * g_au.ch * sizeof(float));
+                        if (h3000_micropitch(&c, &mp) == 0 && wav_save(g_tmpplay, &c) == 0)
+                            start_play_path(g_tmpplay, -2);
+                        audio_free(&c);
+                    }
+                }
+            }
+            if (PAD_justPressed(BTN_START)) {             // RENDER (destructive)
+                stop_play();
+                if (h3000_micropitch(&g_au, &mp) == 0) {
+                    g_modified = 1; g_wave_dirty = 1;
+                    g_view_span = g_au.frames;
+                    if (g_out > g_au.frames) g_out = g_au.frames;
+                }
+                mode = M_EDIT;
+            }
+            if (PAD_justPressed(BTN_B)) { stop_play(); mode = M_EDIT; }
             redraw = 1;
         } else if (mode == M_SETTINGS) {
             if (NAV(BTN_UP))   { if (set_sel > 0) set_sel--; }
@@ -807,6 +852,17 @@ int main(int argc, char *argv[]) {
                                           "AUTO-STOP ON SILENCE", "AUTO-STOP AFTER"};
                 const char *svalues[4] = {v0, v1, v2, v3};
                 ui_draw_settings(&ui, screen, "SETTINGS", slabels, svalues, 4, set_sel);
+            } else if (mode == M_H3000) {
+                char a0[16], a1[16], a2[16], a3[16], a4[16], a5[16];
+                snprintf(a0, sizeof(a0), "%+d CENTS", (int)mp.cents_a);
+                snprintf(a1, sizeof(a1), "%d MS", (int)mp.delay_a_ms);
+                snprintf(a2, sizeof(a2), "%+d CENTS", (int)mp.cents_b);
+                snprintf(a3, sizeof(a3), "%d MS", (int)mp.delay_b_ms);
+                snprintf(a4, sizeof(a4), "%d%%", (int)(mp.feedback * 100));
+                snprintf(a5, sizeof(a5), "%d%%", (int)(mp.mix * 100));
+                const char *hl[6] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX"};
+                const char *hv[6] = {a0, a1, a2, a3, a4, a5};
+                ui_draw_fx(&ui, screen, "MICROPITCH", hl, hv, 6, h_sel, g_play_pid > 0);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }

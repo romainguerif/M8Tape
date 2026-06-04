@@ -81,6 +81,10 @@ void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2);
 void ui_draw_settings(UI *ui, SDL_Surface *s, const char *title,
                       const char **labels, const char **values, int count, int sel);
 
+// H3000 FX screen: algorithm name + native parameter rows + A/B + render.
+void ui_draw_fx(UI *ui, SDL_Surface *s, const char *algo,
+                const char **labels, const char **values, int count, int sel, int playing);
+
 // --- waveform editor --------------------------------------------------------
 // mn[i]/mx[i] are min/max peaks of the VISIBLE view (length = cols). in/out/cur
 // are fractions [0,1] within the view. view_lo/view_hi are the view window as

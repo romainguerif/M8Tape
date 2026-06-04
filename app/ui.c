@@ -328,6 +328,32 @@ void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2) {
     draw_text_c(s, ui->mono, "A  YES        B  NO", C_GREY, s->w / 2, s->h / 2 + 90);
 }
 
+void ui_draw_fx(UI *ui, SDL_Surface *s, const char *algo,
+                const char **labels, const char **values, int count, int sel, int playing) {
+    fillc(s, 0, 0, s->w, s->h, C_BG);
+    draw_label(s, ui->label, "H3000", C_GREY, MARGIN, 30, 3);
+    int aw = draw_text(s, ui->h1, algo ? algo : "", C_WHITE, MARGIN + 180, 22);
+    if (playing) {
+        disc(s, MARGIN + 180 + aw + 28, 44, 7, C_RED);
+        draw_label(s, ui->label, "PREVIEW", C_RED, MARGIN + 180 + aw + 52, 30, 2);
+    }
+    fillc(s, MARGIN, 96, s->w - 2 * MARGIN, 2, C_HAIR);
+
+    int top = 150, rowh = 84;
+    for (int i = 0; i < count; i++) {
+        int y = top + i * rowh;
+        if (i == sel) {
+            fillc(s, MARGIN, y, s->w - 2 * MARGIN, rowh - 14, C_PANEL);
+            fillc(s, MARGIN, y, 7, rowh - 14, C_RED);
+        }
+        draw_text(s, ui->h1, labels[i], i == sel ? C_WHITE : C_GREY, MARGIN + 40, y + 6);
+        draw_text_r(s, ui->h1, values[i], i == sel ? C_AMBER : C_GREY, s->w - MARGIN - 40, y + 6);
+    }
+    fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
+    draw_text(s, ui->mono_sm, "<> ADJUST   A PREVIEW", C_GREY, MARGIN, s->h - 64);
+    draw_text_r(s, ui->mono_sm, "START RENDER   B BACK", C_GREY, s->w - MARGIN, s->h - 64);
+}
+
 void ui_draw_settings(UI *ui, SDL_Surface *s, const char *title,
                       const char **labels, const char **values, int count, int sel) {
     fillc(s, 0, 0, s->w, s->h, C_BG);
