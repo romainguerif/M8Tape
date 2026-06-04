@@ -26,8 +26,13 @@ int main(void) {
     ui_draw_home(&ui, s, &none); save(s, "out_home_noinput.bmp");
 
     UIRec r = {.elapsed = 3 * 60 + 27, .take = "rec_20260604_174142.wav",
-               .angle = 0.7, .blink = 1, .levelL = -1, .levelR = -1};
+               .angle = 0.7, .blink = 1, .levelL = 0.62f, .levelR = 0.91f};
     ui_draw_record(&ui, s, &m8, &r); save(s, "out_record.bmp");
+
+    const char *sl[4] = {"TRIM SILENCE ON REC", "SILENCE THRESHOLD", "AUTO-STOP ON SILENCE", "AUTO-STOP AFTER"};
+    const char *sv[4] = {"ON", "-48 DB", "OFF", "3 S"};
+    ui_draw_settings(&ui, s, "SETTINGS", sl, sv, 4, 1);
+    save(s, "out_settings.bmp");
 
     ui_draw_keyboard(&ui, s, "NAME SAMPLE", "rain_forest", 0, 1, 3);
     save(s, "out_keyboard.bmp");

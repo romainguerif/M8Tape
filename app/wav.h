@@ -36,4 +36,8 @@ void au_peaks(const Audio *a, long s, long e, int cols, float *mn, float *mx);
 // write [s,e) of a as a standalone WAV (for auditioning a selection).
 int  wav_save_range(const char *path, const Audio *a, long s, long e);
 
+// Streaming silence-trim file->file (any channel count / depth; no full load —
+// used on the raw take, incl. M8 24ch). thresh is linear (0..1). Returns 0 ok.
+int  wav_trim_silence_file(const char *in_path, const char *out_path, float thresh);
+
 #endif

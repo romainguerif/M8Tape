@@ -201,7 +201,7 @@ void ui_draw_home(UI *ui, SDL_Surface *s, const UIInput *in) {
 
     // footer
     fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
-    draw_text_r(s, ui->mono_sm, in->present ? "A REC   X LIBRARY   B QUIT" : "X LIBRARY   B QUIT",
+    draw_text_r(s, ui->mono_sm, in->present ? "A REC  X LIBRARY  SEL SETTINGS  B QUIT" : "X LIBRARY  SEL SETTINGS  B QUIT",
                 C_GREY, s->w - MARGIN, s->h - 64);
 }
 
@@ -323,6 +323,24 @@ void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2) {
     draw_text_c(s, ui->mono, "A  YES        B  NO", C_GREY, s->w / 2, s->h / 2 + 90);
 }
 
+void ui_draw_settings(UI *ui, SDL_Surface *s, const char *title,
+                      const char **labels, const char **values, int count, int sel) {
+    fillc(s, 0, 0, s->w, s->h, C_BG);
+    draw_label(s, ui->label, title ? title : "SETTINGS", C_GREY, MARGIN, 44, 2);
+    fillc(s, MARGIN, 112, s->w - 2 * MARGIN, 2, C_HAIR);
+    int top = 180, rowh = 96;
+    for (int i = 0; i < count; i++) {
+        int y = top + i * rowh;
+        if (i == sel) {
+            fillc(s, MARGIN, y, s->w - 2 * MARGIN, rowh - 14, C_PANEL);
+            fillc(s, MARGIN, y, 7, rowh - 14, C_RED);
+        }
+        draw_text(s, ui->h1, labels[i], i == sel ? C_WHITE : C_GREY, MARGIN + 40, y + 8);
+        draw_text_r(s, ui->h1, values[i], i == sel ? C_AMBER : C_GREY, s->w - MARGIN - 40, y + 8);
+    }
+    draw_text_r(s, ui->mono_sm, "<> CHANGE   A TOGGLE   B SAVE", C_GREY, s->w - MARGIN, s->h - 62);
+}
+
 // --- on-screen keyboard -----------------------------------------------------
 const char *kb_rows[KB_CHAR_ROWS] = {
     "1234567890",
@@ -425,6 +443,22 @@ void ui_draw_record(UI *ui, SDL_Surface *s, const UIInput *in, const UIRec *r) {
     draw_reel(s, rx, midY, R, r->angle);
     // fixed center playhead
     fillc(s, s->w / 2 - 1, midY - 48, 3, 96, C_WHITE);
+
+    // level meter (L/R) under the tape
+    if (r->levelL >= 0 || r->levelR >= 0) {
+        int mw = 600, mx = (s->w - mw) / 2, my = midY + R + 30;
+        float lv[2] = {r->levelL, r->levelR};
+        for (int k = 0; k < 2; k++) {
+            int y = my + k * 24;
+            float v = lv[k] < 0 ? 0 : lv[k] > 1 ? 1 : lv[k];
+            int fillw = (int)(mw * v);
+            int clipw = (int)(mw * 0.85f);
+            fillc(s, mx, y, mw, 14, C_PANEL);
+            SDL_Color c = (fillw > clipw) ? C_RED : C_WHITE;
+            fillc(s, mx, y, fillw, 14, c);
+            draw_text(s, ui->mono_sm, k ? "R" : "L", C_GREY, mx - 28, y - 8);
+        }
+    }
 
     // footer transport
     fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);

@@ -275,3 +275,71 @@ void au_peaks(const Audio *a, long s, long e, int cols, float *mn, float *mx) {
         mn[c] = lo; mx[c] = hi;
     }
 }
+
+// --- streaming silence-trim (file -> file) ----------------------------------
+static float dec_sample(const unsigned char *p, int bps) {
+    if (bps == 2) return (int16_t)(p[0] | p[1] << 8) / 32768.0f;
+    if (bps == 3) { int v = p[0] | p[1] << 8 | p[2] << 16; if (v & 0x800000) v |= ~0xFFFFFF; return v / 8388608.0f; }
+    if (bps == 4) return (int32_t)rd_u32(p) / 2147483648.0f;
+    return ((int)p[0] - 128) / 128.0f;
+}
+
+int wav_trim_silence_file(const char *in_path, const char *out_path, float thresh) {
+    FILE *in = fopen(in_path, "rb");
+    if (!in) return -1;
+    unsigned char hdr[12];
+    if (fread(hdr, 1, 12, in) != 12 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4)) { fclose(in); return -1; }
+    int ch = 0, bits = 0; uint32_t rate = 0, data_size = 0; long data_off = 0; int hf = 0, hd = 0;
+    for (;;) {
+        unsigned char ck[8];
+        if (fread(ck, 1, 8, in) != 8) break;
+        uint32_t sz = rd_u32(ck + 4);
+        if (!memcmp(ck, "fmt ", 4)) {
+            unsigned char fb[40]; uint32_t n = sz > sizeof(fb) ? (uint32_t)sizeof(fb) : sz;
+            if (fread(fb, 1, n, in) != n) { fclose(in); return -1; }
+            ch = rd_u16(fb + 2); rate = rd_u32(fb + 4); bits = rd_u16(fb + 14); hf = 1;
+            if (sz > n) fseek(in, (long)(sz - n), SEEK_CUR);
+            if (sz & 1) fseek(in, 1, SEEK_CUR);
+        } else if (!memcmp(ck, "data", 4)) { data_size = sz; data_off = ftell(in); hd = 1; break; }
+        else fseek(in, (long)(sz + (sz & 1)), SEEK_CUR);
+    }
+    if (!hf || !hd || ch < 1 || bits < 8 || (bits & 7)) { fclose(in); return -1; }
+    int bps = bits / 8; long frame = ch * bps;
+    long frames = data_size / frame;
+    if (frames < 1) { fclose(in); return -1; }
+
+    // pass 1: scan for first/last frame above threshold
+    enum { BLK = 8192 };
+    unsigned char *buf = malloc((size_t)frame * BLK);
+    if (!buf) { fclose(in); return -1; }
+    long first = -1, last = -1, idx = 0;
+    fseek(in, data_off, SEEK_SET);
+    for (;;) {
+        size_t got = fread(buf, frame, BLK, in);
+        if (got == 0) break;
+        for (size_t f = 0; f < got; f++, idx++) {
+            const unsigned char *fp = buf + f * frame;
+            float m = 0;
+            for (int c = 0; c < ch; c++) { float v = fabsf(dec_sample(fp + c * bps, bps)); if (v > m) m = v; }
+            if (m > thresh) { if (first < 0) first = idx; last = idx; }
+        }
+    }
+    if (first < 0) { first = 0; last = frames - 1; }  // all silence: keep as-is
+
+    // pass 2: copy [first, last] to out
+    long nframes = last - first + 1;
+    FILE *out = fopen(out_path, "wb");
+    if (!out) { free(buf); fclose(in); return -1; }
+    write_header(out, (uint16_t)ch, rate, (uint16_t)bits, (uint32_t)(nframes * frame));
+    fseek(in, data_off + first * frame, SEEK_SET);
+    long left = nframes;
+    while (left > 0) {
+        size_t want = left < BLK ? (size_t)left : BLK;
+        size_t got = fread(buf, frame, want, in);
+        if (got == 0) break;
+        fwrite(buf, frame, got, out);
+        left -= got;
+    }
+    fclose(out); free(buf); fclose(in);
+    return 0;
+}

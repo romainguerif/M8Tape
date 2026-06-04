@@ -183,6 +183,74 @@ static void setup_library(void) {
     snprintf(g_tmpplay, sizeof(g_tmpplay), "%s/.tmpplay.wav", g_lib);
 }
 
+// --- settings (persisted in the pak) ----------------------------------------
+struct Settings { int trim_on_rec; int trim_db; int autostop; int autostop_sec; };
+static struct Settings g_set = {0, -48, 0, 3};
+
+static void load_settings(void) {
+    char p[700]; snprintf(p, sizeof(p), "%s/settings.cfg", g_out_dir);
+    FILE *f = fopen(p, "r"); if (!f) return;
+    char line[128]; int v;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "trim_on_rec=%d", &v) == 1) g_set.trim_on_rec = v;
+        else if (sscanf(line, "trim_db=%d", &v) == 1) g_set.trim_db = v;
+        else if (sscanf(line, "autostop=%d", &v) == 1) g_set.autostop = v;
+        else if (sscanf(line, "autostop_sec=%d", &v) == 1) g_set.autostop_sec = v;
+    }
+    fclose(f);
+}
+static void save_settings(void) {
+    char p[700]; snprintf(p, sizeof(p), "%s/settings.cfg", g_out_dir);
+    FILE *f = fopen(p, "w"); if (!f) return;
+    fprintf(f, "trim_on_rec=%d\ntrim_db=%d\nautostop=%d\nautostop_sec=%d\n",
+            g_set.trim_on_rec, g_set.trim_db, g_set.autostop, g_set.autostop_sec);
+    fclose(f);
+}
+static float db_to_lin(int db) { return powf(10.0f, db / 20.0f); }
+
+// --- live input level (read the tail of the growing raw take) ---------------
+static float g_levelL = -1, g_levelR = -1;
+
+static int bps_of_fmt(const char *fmt) {
+    if (!fmt) return 2;
+    if (strstr(fmt, "24_3")) return 3;
+    if (strstr(fmt, "S32") || strstr(fmt, "24_LE") || strstr(fmt, "32")) return 4;
+    if (strstr(fmt, "16")) return 2;
+    if (strstr(fmt, "U8") || strstr(fmt, "S8")) return 1;
+    return 2;
+}
+static float decf(const unsigned char *p, int bps) {
+    if (bps == 2) return (int16_t)(p[0] | p[1] << 8) / 32768.0f;
+    if (bps == 3) { int v = p[0] | p[1] << 8 | p[2] << 16; if (v & 0x800000) v |= ~0xFFFFFF; return v / 8388608.0f; }
+    if (bps == 4) { int32_t v = (int32_t)((uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24); return v / 2147483648.0f; }
+    return ((int)p[0] - 128) / 128.0f;
+}
+static void update_rec_level(const struct Input *in) {
+    int bps = bps_of_fmt(in->format), ch = in->channels > 0 ? in->channels : 2;
+    long frame = (long)ch * bps;
+    FILE *f = fopen(g_tmp, "rb"); if (!f) return;
+    fseek(f, 0, SEEK_END); long sz = ftell(f);
+    long avail = sz - 44;
+    if (avail < frame) { fclose(f); return; }
+    long readb = 16384; if (readb > avail) readb = avail; readb -= readb % frame;
+    if (readb < frame) { fclose(f); return; }
+    fseek(f, sz - readb, SEEK_SET);
+    unsigned char *buf = malloc(readb);
+    if (!buf) { fclose(f); return; }
+    size_t got = fread(buf, 1, readb, f); fclose(f);
+    long nf = (long)got / frame;
+    float pk0 = 0, pk1 = 0;
+    for (long i = 0; i < nf; i++) {
+        const unsigned char *fp = buf + i * frame;
+        float a = fabsf(decf(fp, bps)); if (a > pk0) pk0 = a;
+        if (ch >= 2) { float b = fabsf(decf(fp + bps, bps)); if (b > pk1) pk1 = b; }
+    }
+    free(buf);
+    if (ch < 2) pk1 = pk0;
+    g_levelL = pk0 > g_levelL ? pk0 : g_levelL * 0.80f;   // fast attack, slow decay
+    g_levelR = pk1 > g_levelR ? pk1 : g_levelR * 0.80f;
+}
+
 // --- recording --------------------------------------------------------------
 struct Rec { int active; pid_t pid; time_t start; char path[700]; };
 
@@ -251,6 +319,15 @@ static void finalize_save(const char *name, int channels, char *outname, int out
     snprintf(unsorted, sizeof(unsorted), "%s/Unsorted", g_lib);
     mkdir(g_lib, 0777);
     mkdir(unsorted, 0777);
+
+    // optional: auto-trim leading/trailing silence on the raw take (streaming)
+    if (g_set.trim_on_rec) {
+        char t2[760];
+        snprintf(t2, sizeof(t2), "%s.trim", g_tmp);
+        if (wav_trim_silence_file(g_tmp, t2, db_to_lin(g_set.trim_db)) == 0) {
+            unlink(g_tmp); rename(t2, g_tmp);
+        }
+    }
 
     if (channels >= 4 && (channels % 2) == 0 && channels > 2) {
         // multichannel (M8): split into stereo pairs, name as prefix
@@ -363,7 +440,7 @@ static float g_mn[2048], g_mx[2048];   // cached waveform peaks
 static int g_wave_cols, g_wave_dirty;
 
 // --- app --------------------------------------------------------------------
-enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT };
+enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS };
 enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
 
 #define NAV(b) (PAD_justPressed(b) || PAD_justRepeated(b))
@@ -378,6 +455,7 @@ int main(int argc, char *argv[]) {
     PWR_init();
     InitSettings();
     setup_library();
+    load_settings();
 
     UI ui;
     char res_dir[600];
@@ -408,6 +486,10 @@ int main(int argc, char *argv[]) {
     const int EMENU_N = 12;
     int emenu_sel = 0, emenu_scroll = 0;
 
+    // recording level / auto-stop, settings cursor
+    int lvlctr = 0, set_sel = 0;
+    time_t last_sound = 0;
+
     while (!quitting) {
         GFX_startFrame();
         PWR_update(&redraw, NULL, NULL, NULL);
@@ -415,7 +497,16 @@ int main(int argc, char *argv[]) {
         reap_play();
 
         if (mode == M_REC) {
-            if (PAD_justPressed(BTN_A)) {
+            int stop_now = PAD_justPressed(BTN_A);
+            if (++lvlctr >= 6) {           // ~100ms: refresh level meter
+                lvlctr = 0;
+                update_rec_level(&in);
+                float lv = g_levelL > g_levelR ? g_levelL : g_levelR;
+                if (lv > db_to_lin(g_set.trim_db)) last_sound = time(NULL);
+            }
+            if (g_set.autostop && (time(NULL) - rec.start) > 1 &&
+                (time(NULL) - last_sound) >= g_set.autostop_sec) stop_now = 1;
+            if (stop_now) {
                 rec_channels = in.channels;
                 stop_rec(&rec);
                 time_t now = time(NULL); struct tm *tm = localtime(&now);
@@ -608,9 +699,21 @@ int main(int argc, char *argv[]) {
                 else if (back == 0) { g_wave_dirty = 1; mode = M_EDIT; }
             }
             redraw = 1;
+        } else if (mode == M_SETTINGS) {
+            if (NAV(BTN_UP))   { if (set_sel > 0) set_sel--; }
+            if (NAV(BTN_DOWN)) { if (set_sel < 3) set_sel++; }
+            int dl = NAV(BTN_RIGHT) ? 1 : NAV(BTN_LEFT) ? -1 : 0;
+            int tog = PAD_justPressed(BTN_A);
+            if (set_sel == 0 && (dl || tog)) g_set.trim_on_rec = !g_set.trim_on_rec;
+            else if (set_sel == 1 && dl) { g_set.trim_db += dl * 6; if (g_set.trim_db < -60) g_set.trim_db = -36; if (g_set.trim_db > -36) g_set.trim_db = -60; }
+            else if (set_sel == 2 && (dl || tog)) g_set.autostop = !g_set.autostop;
+            else if (set_sel == 3 && dl) { int seq[4] = {2, 3, 5, 10}, idx = 0; for (int i = 0; i < 4; i++) if (seq[i] == g_set.autostop_sec) idx = i; idx = (idx + (dl > 0 ? 1 : 3)) % 4; g_set.autostop_sec = seq[idx]; }
+            if (PAD_justPressed(BTN_B)) { save_settings(); mode = M_HOME; redraw = 1; }
+            redraw = 1;
         } else { // M_HOME
-            if (PAD_justPressed(BTN_A) && in.present) { if (start_rec(&rec, &in)) mode = M_REC; }
+            if (PAD_justPressed(BTN_A) && in.present) { if (start_rec(&rec, &in)) { g_levelL = 0; g_levelR = 0; lvlctr = 0; last_sound = time(NULL); mode = M_REC; } }
             if (PAD_justPressed(BTN_X)) { snprintf(g_cur, sizeof(g_cur), "%s", g_lib); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; redraw = 1; }
+            if (PAD_justPressed(BTN_SELECT)) { set_sel = 0; mode = M_SETTINGS; redraw = 1; }
             if (PAD_justReleased(BTN_B) || PAD_justReleased(BTN_MENU)) quitting = 1;
             if (++frames >= 60) {
                 frames = 0;
@@ -626,7 +729,7 @@ int main(int argc, char *argv[]) {
             if (mode == M_REC) {
                 UIRec ui_r = { .elapsed = (long)(time(NULL) - rec.start), .take = NULL,
                     .angle = (double)(SDL_GetTicks() % 1200) / 1200.0 * 2.0 * M_PI,
-                    .blink = ((time(NULL) % 2) == 0), .levelL = -1, .levelR = -1 };
+                    .blink = ((time(NULL) % 2) == 0), .levelL = g_levelL, .levelR = g_levelR };
                 ui_draw_record(&ui, screen, &ui_in, &ui_r);
             } else if (mode == M_NAME) {
                 const char *title = name_purpose == NP_RENAME ? "RENAME"
@@ -667,6 +770,16 @@ int main(int argc, char *argv[]) {
                 ui_draw_menu(&ui, screen, "EDIT", EMENU, EMENU_N, emenu_sel, emenu_scroll);
             } else if (mode == M_EDIT_EXIT) {
                 ui_draw_confirm(&ui, screen, "DISCARD?", "UNSAVED CHANGES");
+            } else if (mode == M_SETTINGS) {
+                char v0[8], v1[16], v2[8], v3[16];
+                snprintf(v0, sizeof(v0), "%s", g_set.trim_on_rec ? "ON" : "OFF");
+                snprintf(v1, sizeof(v1), "%d DB", g_set.trim_db);
+                snprintf(v2, sizeof(v2), "%s", g_set.autostop ? "ON" : "OFF");
+                snprintf(v3, sizeof(v3), "%d S", g_set.autostop_sec);
+                const char *slabels[4] = {"TRIM SILENCE ON REC", "SILENCE THRESHOLD",
+                                          "AUTO-STOP ON SILENCE", "AUTO-STOP AFTER"};
+                const char *svalues[4] = {v0, v1, v2, v3};
+                ui_draw_settings(&ui, screen, "SETTINGS", slabels, svalues, 4, set_sel);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }

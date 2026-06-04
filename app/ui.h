@@ -77,6 +77,10 @@ void ui_draw_menu(UI *ui, SDL_Surface *s, const char *title,
 int  ui_menu_visible_rows(SDL_Surface *s);
 void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2);
 
+// settings: label[i] + value[i] rows, sel highlighted.
+void ui_draw_settings(UI *ui, SDL_Surface *s, const char *title,
+                      const char **labels, const char **values, int count, int sel);
+
 // --- waveform editor --------------------------------------------------------
 // mn[i]/mx[i] are min/max peaks per column (length = cols, the waveform pixel
 // width). in/out/cur are positions as fractions [0,1] of the file.
