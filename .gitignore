@@ -18,3 +18,17 @@ m8split-src/m8split
 m8split-src/m8split-native
 m8split-src/test_*.wav
 m8split-src/test_out/
+
+# App SDL2 (M8Tape Studio) : source suivie, artefacts ignorés
+app/minui/
+app/platform/
+app/m8tape-tg5040
+toolchain/
+
+# Pak compilé (binaire + libs bundlées) : non commité, packagé localement
+M8Tape Studio.pak/m8tape-tg5040
+M8Tape Studio.pak/lib/
+M8Tape Studio.pak/m8tape.log
+
+# Recherche : digest suivi, images tierces ignorées
+research/m8-screenshots/
