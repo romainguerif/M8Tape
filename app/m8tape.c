@@ -788,8 +788,14 @@ int main(int argc, char *argv[]) {
             if (NAV(BTN_R1)) g_curpos += page;
             if (g_curpos < 0) g_curpos = 0;
             if (g_curpos > g_au.frames) g_curpos = g_au.frames;
-            if (PAD_justPressed(BTN_Y)) { g_in = au_snap_zero(&g_au, g_curpos); if (g_in >= g_out) g_in = g_out > 0 ? g_out - 1 : 0; }
-            if (PAD_justPressed(BTN_X)) { g_out = au_snap_zero(&g_au, g_curpos); if (g_out <= g_in) g_out = g_in + 1; if (g_out > g_au.frames) g_out = g_au.frames; }
+            // zero-snap window scaled to the zoom: a few pixels of the visible
+            // span, so IN/OUT land on the cursor even when zoomed in (capped at
+            // ~10 ms when zoomed out, where a small snap is imperceptible).
+            long zwin = span / 256; if (zwin < 1) zwin = 1;
+            long zcap = g_au.rate / 100; if (zcap < 1) zcap = 1;
+            if (zwin > zcap) zwin = zcap;
+            if (PAD_justPressed(BTN_Y)) { g_in = au_snap_zero(&g_au, g_curpos, zwin); if (g_in >= g_out) g_in = g_out > 0 ? g_out - 1 : 0; }
+            if (PAD_justPressed(BTN_X)) { g_out = au_snap_zero(&g_au, g_curpos, zwin); if (g_out <= g_in) g_out = g_in + 1; if (g_out > g_au.frames) g_out = g_au.frames; }
             if (PAD_justPressed(BTN_A)) {
                 if (g_play_pid > 0) stop_play();
                 else if (wav_save_range(g_tmpplay, &g_au, g_in, g_out) == 0) start_play_path(g_tmpplay, -2);

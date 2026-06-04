@@ -44,6 +44,25 @@ static void draw_text_r(SDL_Surface *s, TTF_Font *f, const char *str, SDL_Color 
     SDL_FreeSurface(t);
 }
 
+// Copy `src` into `dst`, shortening with a trailing ".." until it renders within
+// `maxw` px in font `f`. Keeps long names (e.g. timestamped .wav files) from
+// overrunning a neighbouring element on the same row.
+static const char *fit_text(char *dst, int n, TTF_Font *f, const char *src, int maxw) {
+    if (!src) src = "";
+    snprintf(dst, n, "%s", src);
+    if (!f || maxw <= 0) return dst;
+    int w = 0;
+    TTF_SizeUTF8(f, dst, &w, NULL);
+    if (w <= maxw) return dst;
+    for (int len = (int)strlen(src); len > 0; len--) {
+        snprintf(dst, n, "%.*s..", len, src);
+        TTF_SizeUTF8(f, dst, &w, NULL);
+        if (w <= maxw) return dst;
+    }
+    snprintf(dst, n, "..");
+    return dst;
+}
+
 // uppercase label with letter-spacing (the TE/Nothing label treatment).
 static int draw_label(SDL_Surface *s, TTF_Font *f, const char *str, SDL_Color c,
                       int x, int y, int tracking) {
@@ -282,7 +301,11 @@ void ui_draw_editor(UI *ui, SDL_Surface *s, const char *name, const char *info,
                     double in_frac, double out_frac, double cur_frac, int playing,
                     double view_lo, double view_hi, const char *pos) {
     fillc(s, 0, 0, s->w, s->h, C_BG);
-    draw_text(s, ui->h1, name ? name : "", C_WHITE, MARGIN, 24);
+    int info_w = 0;
+    if (info) TTF_SizeUTF8(ui->mono_sm, info, &info_w, NULL);
+    int title_max = s->w - 2 * MARGIN - info_w - 24;   // gap before the right-aligned info
+    char nbuf[160];
+    draw_text(s, ui->h1, fit_text(nbuf, sizeof nbuf, ui->h1, name, title_max), C_WHITE, MARGIN, 24);
     if (info) draw_text_r(s, ui->mono_sm, info, C_GREY, s->w - MARGIN, 40);
     fillc(s, MARGIN, 108, s->w - 2 * MARGIN, 2, C_HAIR);
 

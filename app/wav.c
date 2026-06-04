@@ -262,10 +262,12 @@ void au_dither16(Audio *a) {
     a->bits = 16;
 }
 
-// nearest zero crossing to pos (channel 0), within a small window
-long au_snap_zero(const Audio *a, long pos) {
+// nearest zero crossing to pos (channel 0), within +-win frames. The caller
+// bounds `win` to the visible zoom so the snapped marker stays at the cursor
+// (a fixed window could snap the marker off-screen when zoomed in).
+long au_snap_zero(const Audio *a, long pos, long win) {
     if (pos < 1) pos = 1; if (pos >= a->frames) pos = a->frames - 1;
-    long win = a->rate / 100; if (win < 32) win = 32; if (win > 4000) win = 4000;
+    if (win < 1) win = 1;
     for (long d = 0; d < win; d++) {
         long i = pos + d;
         if (i > 0 && i < a->frames && a->data[(i - 1) * a->ch] * a->data[i * a->ch] <= 0) return i;

@@ -65,7 +65,7 @@ int main(void) {
         double a = env * (0.35 + 0.6 * ((i * 37 % 100) / 100.0));
         mx[i] = (float)a; mn[i] = (float)-a;
     }
-    ui_draw_editor(&ui, s, "rain_forest.wav", "0:42  44100HZ  2CH  24BIT",
+    ui_draw_editor(&ui, s, "rec_20260604_174142_field_recording.wav", "0:42  44100HZ  2CH  24BIT",
                    mn, mx, cols, 0.12, 0.78, 0.50, 0, 0.30, 0.55, "CURSOR  0:21.350");
     save(s, "out_editor.bmp");
 
