@@ -202,15 +202,77 @@ void au_reverse(Audio *a, long s, long e) {
     }
 }
 
+// equal-power (sine-law) fades — smoother, constant perceived energy
 void au_fade_in(Audio *a, long s, long e) {
     if (s < 0) s = 0; if (e > a->frames) e = a->frames;
     long n = e - s; if (n < 1) return;
-    for (long i = 0; i < n; i++) { float g = (float)i / n; for (int c = 0; c < a->ch; c++) a->data[(s + i) * a->ch + c] *= g; }
+    for (long i = 0; i < n; i++) { float g = sinf((float)i / n * (float)M_PI / 2.0f); for (int c = 0; c < a->ch; c++) a->data[(s + i) * a->ch + c] *= g; }
 }
 void au_fade_out(Audio *a, long s, long e) {
     if (s < 0) s = 0; if (e > a->frames) e = a->frames;
     long n = e - s; if (n < 1) return;
-    for (long i = 0; i < n; i++) { float g = 1.0f - (float)i / n; for (int c = 0; c < a->ch; c++) a->data[(s + i) * a->ch + c] *= g; }
+    for (long i = 0; i < n; i++) { float g = cosf((float)i / n * (float)M_PI / 2.0f); for (int c = 0; c < a->ch; c++) a->data[(s + i) * a->ch + c] *= g; }
+}
+
+void au_gain_db(Audio *a, long s, long e, float db) {
+    if (s < 0) s = 0; if (e > a->frames) e = a->frames;
+    float g = powf(10.0f, db / 20.0f);
+    for (long i = s; i < e; i++) for (int c = 0; c < a->ch; c++) a->data[i * a->ch + c] *= g;
+}
+
+// one-pole high-pass per channel over the whole file (kills DC/rumble)
+void au_highpass(Audio *a, float fc) {
+    if (a->rate <= 0 || a->frames < 2) return;
+    float dt = 1.0f / a->rate, rc = 1.0f / (2.0f * (float)M_PI * fc), alpha = rc / (rc + dt);
+    for (int c = 0; c < a->ch; c++) {
+        float px = a->data[c], py = a->data[c];
+        for (long i = 1; i < a->frames; i++) {
+            float x = a->data[i * a->ch + c];
+            float y = alpha * (py + x - px);
+            a->data[i * a->ch + c] = y; px = x; py = y;
+        }
+    }
+}
+
+// crossfade the loop boundary so [s,e) loops seamlessly (blend tail into head)
+void au_loop_xfade(Audio *a, long s, long e) {
+    if (s < 0) s = 0; if (e > a->frames) e = a->frames;
+    long n = e - s; if (n < 8) return;
+    long L = n / 4, maxL = (long)(a->rate * 0.05); // <=50ms
+    if (L > maxL) L = maxL; if (L < 1) return;
+    for (long i = 0; i < L; i++) {
+        float t = (i + 0.5f) / L, wo = cosf(t * (float)M_PI / 2.0f), wi = sinf(t * (float)M_PI / 2.0f);
+        for (int c = 0; c < a->ch; c++) {
+            float endv = a->data[(e - L + i) * a->ch + c];
+            float startv = a->data[(s + i) * a->ch + c];
+            a->data[(e - L + i) * a->ch + c] = endv * wo + startv * wi;
+        }
+    }
+}
+
+void au_dither16(Audio *a) {
+    static int seeded = 0;
+    if (!seeded) { srand(1234567u + (unsigned)a->frames); seeded = 1; }
+    float lsb = 1.0f / 32768.0f;
+    for (long i = 0; i < a->frames * a->ch; i++) {
+        float rm = (float)RAND_MAX;
+        float r = ((float)rand() / rm - 0.5f) + ((float)rand() / rm - 0.5f); // TPDF
+        a->data[i] += r * lsb;
+    }
+    a->bits = 16;
+}
+
+// nearest zero crossing to pos (channel 0), within a small window
+long au_snap_zero(const Audio *a, long pos) {
+    if (pos < 1) pos = 1; if (pos >= a->frames) pos = a->frames - 1;
+    long win = a->rate / 100; if (win < 32) win = 32; if (win > 4000) win = 4000;
+    for (long d = 0; d < win; d++) {
+        long i = pos + d;
+        if (i > 0 && i < a->frames && a->data[(i - 1) * a->ch] * a->data[i * a->ch] <= 0) return i;
+        long j = pos - d;
+        if (j > 0 && j < a->frames && a->data[(j - 1) * a->ch] * a->data[j * a->ch] <= 0) return j;
+    }
+    return pos;
 }
 
 int au_crop(Audio *a, long s, long e) {

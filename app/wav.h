@@ -29,6 +29,11 @@ int  au_crop(Audio *a, long s, long e);                // keep [s,e)
 int  au_to_mono(Audio *a);
 int  au_halve_rate(Audio *a);                          // averaging decimation
 void au_silence_bounds(const Audio *a, float thresh, long *s, long *e);
+void au_gain_db(Audio *a, long s, long e, float db);   // gain on [s,e)
+void au_highpass(Audio *a, float fc);                  // one-pole HP (rumble/DC)
+void au_loop_xfade(Audio *a, long s, long e);          // seamless-loop crossfade
+void au_dither16(Audio *a);                            // TPDF dither + set 16-bit
+long au_snap_zero(const Audio *a, long pos);           // nearest zero crossing
 
 // peaks for display: cols columns over [s,e), each gets min/max in [-1,1].
 void au_peaks(const Audio *a, long s, long e, int cols, float *mn, float *mx);

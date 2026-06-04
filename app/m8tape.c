@@ -482,10 +482,11 @@ int main(int argc, char *argv[]) {
     char move_from[1024] = {0}, move_name[256] = {0};
 
     // editor ops menu
-    static const char *EMENU[] = {"NORMALIZE", "FADE IN", "FADE OUT", "REVERSE",
+    static const char *EMENU[] = {"NORMALIZE", "GAIN +1 DB", "GAIN -1 DB",
+        "FADE IN", "FADE OUT", "LOOP XFADE", "REVERSE", "HIGH-PASS",
         "TRIM TO SELECTION", "TRIM SILENCE", "TO MONO", "16-BIT", "HALF RATE",
         "SAVE", "SAVE AS", "EXIT"};
-    const int EMENU_N = 12;
+    const int EMENU_N = 16;
     int emenu_sel = 0, emenu_scroll = 0;
 
     // recording level / auto-stop, settings cursor
@@ -663,8 +664,8 @@ int main(int argc, char *argv[]) {
             if (NAV(BTN_R1))    g_curpos += page;
             if (g_curpos < 0) g_curpos = 0;
             if (g_curpos > g_au.frames) g_curpos = g_au.frames;
-            if (PAD_justPressed(BTN_Y)) { g_in = g_curpos; if (g_in >= g_out) g_in = g_out > 0 ? g_out - 1 : 0; }
-            if (PAD_justPressed(BTN_X)) { g_out = g_curpos; if (g_out <= g_in) g_out = g_in + 1; if (g_out > g_au.frames) g_out = g_au.frames; }
+            if (PAD_justPressed(BTN_Y)) { g_in = au_snap_zero(&g_au, g_curpos); if (g_in >= g_out) g_in = g_out > 0 ? g_out - 1 : 0; }
+            if (PAD_justPressed(BTN_X)) { g_out = au_snap_zero(&g_au, g_curpos); if (g_out <= g_in) g_out = g_in + 1; if (g_out > g_au.frames) g_out = g_au.frames; }
             if (PAD_justPressed(BTN_A)) {
                 if (g_play_pid > 0) stop_play();
                 else if (wav_save_range(g_tmpplay, &g_au, g_in, g_out) == 0) start_play_path(g_tmpplay, -2);
@@ -690,13 +691,17 @@ int main(int argc, char *argv[]) {
                 const char *op = EMENU[emenu_sel];
                 int back = 1;
                 if (!strcmp(op, "NORMALIZE")) au_normalize(&g_au);
+                else if (!strcmp(op, "GAIN +1 DB")) au_gain_db(&g_au, g_in, g_out, 1.0f);
+                else if (!strcmp(op, "GAIN -1 DB")) au_gain_db(&g_au, g_in, g_out, -1.0f);
                 else if (!strcmp(op, "FADE IN")) au_fade_in(&g_au, g_in, g_out);
                 else if (!strcmp(op, "FADE OUT")) au_fade_out(&g_au, g_in, g_out);
+                else if (!strcmp(op, "LOOP XFADE")) au_loop_xfade(&g_au, g_in, g_out);
+                else if (!strcmp(op, "HIGH-PASS")) au_highpass(&g_au, 80.0f);
                 else if (!strcmp(op, "REVERSE")) au_reverse(&g_au, g_in, g_out);
                 else if (!strcmp(op, "TRIM TO SELECTION")) { au_crop(&g_au, g_in, g_out); g_in = 0; g_out = g_au.frames; g_curpos = 0; g_view_span = g_au.frames; }
                 else if (!strcmp(op, "TRIM SILENCE")) { long s, e; au_silence_bounds(&g_au, 0.01f, &s, &e); au_crop(&g_au, s, e); g_in = 0; g_out = g_au.frames; g_curpos = 0; g_view_span = g_au.frames; }
                 else if (!strcmp(op, "TO MONO")) au_to_mono(&g_au);
-                else if (!strcmp(op, "16-BIT")) g_au.bits = 16;
+                else if (!strcmp(op, "16-BIT")) au_dither16(&g_au);
                 else if (!strcmp(op, "HALF RATE")) { au_halve_rate(&g_au); g_in = 0; g_out = g_au.frames; g_curpos = 0; g_view_span = g_au.frames; }
                 else if (!strcmp(op, "SAVE")) { remount("async"); wav_save(g_edit_path, &g_au); remount("sync"); g_modified = 0; list_dir(); back = 0; }
                 else if (!strcmp(op, "SAVE AS")) { name[0] = '\0'; name_purpose = NP_SAVEAS; caps = 0; krow = 1; kcol = 0; mode = M_NAME; back = -1; }
