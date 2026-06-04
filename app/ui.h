@@ -82,11 +82,13 @@ void ui_draw_settings(UI *ui, SDL_Surface *s, const char *title,
                       const char **labels, const char **values, int count, int sel);
 
 // --- waveform editor --------------------------------------------------------
-// mn[i]/mx[i] are min/max peaks per column (length = cols, the waveform pixel
-// width). in/out/cur are positions as fractions [0,1] of the file.
+// mn[i]/mx[i] are min/max peaks of the VISIBLE view (length = cols). in/out/cur
+// are fractions [0,1] within the view. view_lo/view_hi are the view window as
+// fractions of the whole file (for the overview bar). pos = cursor time string.
 void ui_draw_editor(UI *ui, SDL_Surface *s, const char *name, const char *info,
                     const float *mn, const float *mx, int cols,
-                    double in_frac, double out_frac, double cur_frac, int playing);
+                    double in_frac, double out_frac, double cur_frac, int playing,
+                    double view_lo, double view_hi, const char *pos);
 int  ui_editor_cols(SDL_Surface *s); // waveform pixel width
 
 #endif

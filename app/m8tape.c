@@ -436,8 +436,10 @@ static Audio g_au;
 static long g_in, g_out, g_curpos;
 static int g_modified;
 static char g_edit_path[1300];
-static float g_mn[2048], g_mx[2048];   // cached waveform peaks
+static float g_mn[2048], g_mx[2048];   // cached waveform peaks (of the view)
 static int g_wave_cols, g_wave_dirty;
+static long g_view_span;               // visible frames (zoom)
+static long g_pk_vs = -1, g_pk_span = -1; // peak cache key (view start/span)
 
 // --- app --------------------------------------------------------------------
 enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS };
@@ -598,6 +600,7 @@ int main(int argc, char *argv[]) {
                     if (wav_load(p, &g_au) == 0 && g_au.frames > 0) {
                         snprintf(g_edit_path, sizeof(g_edit_path), "%s", p);
                         g_in = 0; g_out = g_au.frames; g_curpos = 0; g_modified = 0;
+                        g_view_span = g_au.frames; g_pk_vs = -1;
                         g_wave_dirty = 1; emenu_sel = 0; emenu_scroll = 0; mode = M_EDIT;
                     } else { audio_free(&g_au); mode = M_BROWSE; }
                 }
@@ -645,12 +648,19 @@ int main(int argc, char *argv[]) {
             }
             redraw = 1;
         } else if (mode == M_EDIT) {
-            long step = g_au.frames / 1000; if (step < 1) step = 1;
-            long fast = g_au.frames / 20; if (fast < 1) fast = 1;
+            int ecols = ui_editor_cols(screen);
+            long minspan = g_au.frames < 128 ? g_au.frames : 128;
+            if (g_view_span > g_au.frames) g_view_span = g_au.frames;
+            if (g_view_span < minspan) g_view_span = minspan;
+            long span = g_view_span;
+            long step = span / ecols; if (step < 1) step = 1;   // ~1px → fine when zoomed
+            long page = span / 4; if (page < 1) page = 1;
+            if (PAD_justPressed(BTN_R2)) { g_view_span /= 2; if (g_view_span < minspan) g_view_span = minspan; }
+            if (PAD_justPressed(BTN_L2)) { g_view_span *= 2; if (g_view_span > g_au.frames) g_view_span = g_au.frames; }
             if (NAV(BTN_LEFT))  g_curpos -= step;
             if (NAV(BTN_RIGHT)) g_curpos += step;
-            if (NAV(BTN_L1))    g_curpos -= fast;
-            if (NAV(BTN_R1))    g_curpos += fast;
+            if (NAV(BTN_L1))    g_curpos -= page;
+            if (NAV(BTN_R1))    g_curpos += page;
             if (g_curpos < 0) g_curpos = 0;
             if (g_curpos > g_au.frames) g_curpos = g_au.frames;
             if (PAD_justPressed(BTN_Y)) { g_in = g_curpos; if (g_in >= g_out) g_in = g_out > 0 ? g_out - 1 : 0; }
@@ -683,11 +693,11 @@ int main(int argc, char *argv[]) {
                 else if (!strcmp(op, "FADE IN")) au_fade_in(&g_au, g_in, g_out);
                 else if (!strcmp(op, "FADE OUT")) au_fade_out(&g_au, g_in, g_out);
                 else if (!strcmp(op, "REVERSE")) au_reverse(&g_au, g_in, g_out);
-                else if (!strcmp(op, "TRIM TO SELECTION")) { au_crop(&g_au, g_in, g_out); g_in = 0; g_out = g_au.frames; g_curpos = 0; }
-                else if (!strcmp(op, "TRIM SILENCE")) { long s, e; au_silence_bounds(&g_au, 0.01f, &s, &e); au_crop(&g_au, s, e); g_in = 0; g_out = g_au.frames; g_curpos = 0; }
+                else if (!strcmp(op, "TRIM TO SELECTION")) { au_crop(&g_au, g_in, g_out); g_in = 0; g_out = g_au.frames; g_curpos = 0; g_view_span = g_au.frames; }
+                else if (!strcmp(op, "TRIM SILENCE")) { long s, e; au_silence_bounds(&g_au, 0.01f, &s, &e); au_crop(&g_au, s, e); g_in = 0; g_out = g_au.frames; g_curpos = 0; g_view_span = g_au.frames; }
                 else if (!strcmp(op, "TO MONO")) au_to_mono(&g_au);
                 else if (!strcmp(op, "16-BIT")) g_au.bits = 16;
-                else if (!strcmp(op, "HALF RATE")) { au_halve_rate(&g_au); g_in = 0; g_out = g_au.frames; g_curpos = 0; }
+                else if (!strcmp(op, "HALF RATE")) { au_halve_rate(&g_au); g_in = 0; g_out = g_au.frames; g_curpos = 0; g_view_span = g_au.frames; }
                 else if (!strcmp(op, "SAVE")) { remount("async"); wav_save(g_edit_path, &g_au); remount("sync"); g_modified = 0; list_dir(); back = 0; }
                 else if (!strcmp(op, "SAVE AS")) { name[0] = '\0'; name_purpose = NP_SAVEAS; caps = 0; krow = 1; kcol = 0; mode = M_NAME; back = -1; }
                 else if (!strcmp(op, "EXIT")) {
@@ -753,19 +763,29 @@ int main(int argc, char *argv[]) {
                 ui_draw_confirm(&ui, screen, "DELETE", g_nent ? g_ents[g_bsel].name : "");
             } else if (mode == M_EDIT) {
                 int cols = ui_editor_cols(screen); if (cols > 2048) cols = 2048;
-                if (g_wave_dirty || cols != g_wave_cols) {
-                    au_peaks(&g_au, 0, g_au.frames, cols, g_mn, g_mx);
-                    g_wave_cols = cols; g_wave_dirty = 0;
+                long span = g_view_span; if (span > g_au.frames) span = g_au.frames; if (span < 1) span = 1;
+                long vs = g_curpos - span / 2;             // view follows cursor
+                if (vs > g_au.frames - span) vs = g_au.frames - span;
+                if (vs < 0) vs = 0;
+                if (g_wave_dirty || cols != g_wave_cols || vs != g_pk_vs || span != g_pk_span) {
+                    au_peaks(&g_au, vs, vs + span, cols, g_mn, g_mx);
+                    g_wave_cols = cols; g_pk_vs = vs; g_pk_span = span; g_wave_dirty = 0;
                 }
                 char info[96];
                 long secs = g_au.rate ? g_au.frames / g_au.rate : 0;
                 snprintf(info, sizeof(info), "%ld:%02ld  %dHZ  %dCH  %dBIT%s",
                          secs / 60, secs % 60, g_au.rate, g_au.ch, g_au.bits, g_modified ? "  *" : "");
-                double inf = g_au.frames ? (double)g_in / g_au.frames : 0;
-                double outf = g_au.frames ? (double)g_out / g_au.frames : 1;
-                double curf = g_au.frames ? (double)g_curpos / g_au.frames : 0;
+                double inf = (double)(g_in - vs) / span; if (inf < 0) inf = 0; if (inf > 1) inf = 1;
+                double outf = (double)(g_out - vs) / span; if (outf < 0) outf = 0; if (outf > 1) outf = 1;
+                double curf = (double)(g_curpos - vs) / span; if (curf < 0) curf = 0; if (curf > 1) curf = 1;
+                double vlo = (double)vs / g_au.frames, vhi = (double)(vs + span) / g_au.frames;
+                char pos[48];
+                double ct = g_au.rate ? (double)g_curpos / g_au.rate : 0;
+                int cm = (int)ct / 60; double cssec = ct - cm * 60;
+                snprintf(pos, sizeof(pos), "CURSOR  %d:%06.3f", cm, cssec);
                 const char *nm = strrchr(g_edit_path, '/'); nm = nm ? nm + 1 : g_edit_path;
-                ui_draw_editor(&ui, screen, nm, info, g_mn, g_mx, cols, inf, outf, curf, g_play_pid > 0);
+                ui_draw_editor(&ui, screen, nm, info, g_mn, g_mx, cols, inf, outf, curf,
+                               g_play_pid > 0, vlo, vhi, pos);
             } else if (mode == M_EMENU) {
                 ui_draw_menu(&ui, screen, "EDIT", EMENU, EMENU_N, emenu_sel, emenu_scroll);
             } else if (mode == M_EDIT_EXIT) {

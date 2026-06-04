@@ -279,7 +279,8 @@ int ui_editor_cols(SDL_Surface *s) { return s->w - 2 * MARGIN; }
 
 void ui_draw_editor(UI *ui, SDL_Surface *s, const char *name, const char *info,
                     const float *mn, const float *mx, int cols,
-                    double in_frac, double out_frac, double cur_frac, int playing) {
+                    double in_frac, double out_frac, double cur_frac, int playing,
+                    double view_lo, double view_hi, const char *pos) {
     fillc(s, 0, 0, s->w, s->h, C_BG);
     draw_text(s, ui->h1, name ? name : "", C_WHITE, MARGIN, 24);
     if (info) draw_text_r(s, ui->mono_sm, info, C_GREY, s->w - MARGIN, 40);
@@ -290,11 +291,8 @@ void ui_draw_editor(UI *ui, SDL_Surface *s, const char *name, const char *info,
     int in_x  = x0 + (int)(in_frac  * w);
     int out_x = x0 + (int)(out_frac * w);
 
-    // selection background band
-    fillc(s, in_x, WF_TOP, out_x - in_x, WF_BOT - WF_TOP, C_PANEL);
-    // center line
-    fillc(s, x0, mid, w, 1, C_HAIR);
-    // waveform columns (in selection = white, outside = dim)
+    fillc(s, in_x, WF_TOP, out_x - in_x, WF_BOT - WF_TOP, C_PANEL);  // selection band
+    fillc(s, x0, mid, w, 1, C_HAIR);                                  // center line
     for (int i = 0; i < w; i++) {
         int x = x0 + i;
         int top = mid - (int)(mx[i] * half);
@@ -304,16 +302,23 @@ void ui_draw_editor(UI *ui, SDL_Surface *s, const char *name, const char *info,
         SDL_Color c = (x >= in_x && x <= out_x) ? C_WHITE : C_GREY;
         fillc(s, x, top, 1, bot - top, c);
     }
-    // markers + cursor
     fillc(s, in_x, WF_TOP, 2, WF_BOT - WF_TOP, C_AMBER);
     fillc(s, out_x, WF_TOP, 2, WF_BOT - WF_TOP, C_AMBER);
     int cur_x = x0 + (int)(cur_frac * w);
     fillc(s, cur_x, WF_TOP - 8, 3, WF_BOT - WF_TOP + 16, playing ? C_RED : C_WHITE);
 
+    // overview bar (whole file) with the current view window highlighted
+    int oy = WF_BOT + 26, oh = 12;
+    fillc(s, x0, oy, w, oh, C_PANEL);
+    int vlo = x0 + (int)(view_lo * w), vhi = x0 + (int)(view_hi * w);
+    if (vhi - vlo < 3) vhi = vlo + 3;
+    fillc(s, vlo, oy, vhi - vlo, oh, C_AMBER);
+    if (pos) draw_text_c(s, ui->mono_sm, pos, C_GREY, s->w / 2, oy + 26);
+
     // footer
     fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
-    draw_text(s, ui->mono_sm, "<>MOVE  L/R FAST  Y IN  X OUT", C_GREY, MARGIN, s->h - 64);
-    draw_text_r(s, ui->mono_sm, "A PLAY   START EDIT   B EXIT", C_GREY, s->w - MARGIN, s->h - 64);
+    draw_text(s, ui->mono_sm, "<>MOVE  L2/R2 ZOOM  Y IN  X OUT", C_GREY, MARGIN, s->h - 64);
+    draw_text_r(s, ui->mono_sm, "A PLAY  START EDIT  B EXIT", C_GREY, s->w - MARGIN, s->h - 64);
 }
 
 void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2) {

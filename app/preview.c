@@ -56,7 +56,7 @@ int main(void) {
         mx[i] = (float)a; mn[i] = (float)-a;
     }
     ui_draw_editor(&ui, s, "rain_forest.wav", "0:42  44100HZ  2CH  24BIT",
-                   mn, mx, cols, 0.18, 0.72, 0.40, 0);
+                   mn, mx, cols, 0.12, 0.78, 0.50, 0, 0.30, 0.55, "CURSOR  0:21.350");
     save(s, "out_editor.bmp");
 
     const char *eopts[] = {"NORMALIZE", "FADE IN", "FADE OUT", "REVERSE",
