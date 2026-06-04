@@ -125,14 +125,16 @@ static TTF_Font *openf(const char *dir, const char *file, int pt) {
 
 int ui_load_fonts(UI *ui, const char *dir) {
     memset(ui, 0, sizeof(*ui));
-    ui->wordmark = openf(dir, "dotmatrix.ttf", 34);
-    ui->seg_big  = openf(dir, "seg.ttf", 96);
-    ui->seg_mid  = openf(dir, "seg.ttf", 34);
-    ui->hero     = openf(dir, "label.ttf", 50);
-    ui->h1       = openf(dir, "label.ttf", 22);
-    ui->label    = openf(dir, "label.ttf", 15);
-    ui->mono     = openf(dir, "mono.ttf", 16);
-    ui->mono_sm  = openf(dir, "mono.ttf", 12);
+    // Nothing-style dot-matrix font for EVERYTHING (scaled up for the tiny,
+    // high-density 3.2" 1024x768 panel).
+    ui->wordmark = openf(dir, "dotmatrix.ttf", 56);
+    ui->seg_big  = openf(dir, "dotmatrix.ttf", 150); // hero timecode
+    ui->seg_mid  = openf(dir, "dotmatrix.ttf", 56);
+    ui->hero     = openf(dir, "dotmatrix.ttf", 80);  // source name
+    ui->h1       = openf(dir, "dotmatrix.ttf", 56);
+    ui->label    = openf(dir, "dotmatrix.ttf", 30);
+    ui->mono     = openf(dir, "dotmatrix.ttf", 32);
+    ui->mono_sm  = openf(dir, "dotmatrix.ttf", 26);
     if (!ui->wordmark || !ui->seg_big || !ui->hero || !ui->h1 ||
         !ui->label || !ui->mono || !ui->mono_sm)
         return 1;
@@ -150,15 +152,15 @@ void ui_free(UI *ui) {
 #define MARGIN 32
 
 static void header(UI *ui, SDL_Surface *s, const char *mode, const char *right) {
-    draw_text(s, ui->wordmark, "M8TAPE", C_WHITE, MARGIN, 22);
-    draw_label(s, ui->label, mode, C_GREY, MARGIN + 250, 34, 3);
-    if (right) draw_text_r(s, ui->mono, right, C_GREY, s->w - MARGIN, 32);
-    fillc(s, MARGIN, 78, s->w - 2 * MARGIN, 1, C_HAIR);
+    int w = draw_text(s, ui->wordmark, "M8TAPE", C_WHITE, MARGIN, 24);
+    draw_label(s, ui->label, mode, C_GREY, MARGIN + w + 30, 48, 2);
+    if (right) draw_text_r(s, ui->mono, right, C_GREY, s->w - MARGIN, 40);
+    fillc(s, MARGIN, 110, s->w - 2 * MARGIN, 2, C_HAIR);
 }
 
 static void status_dot(UI *ui, SDL_Surface *s, int x, int y, const char *lbl, int on) {
-    disc(s, x + 5, y + 8, 5, on ? C_WHITE : C_HAIR);
-    draw_label(s, ui->label, lbl, on ? C_GREY : C_HAIR, x + 18, y, 2);
+    disc(s, x + 7, y + 14, 7, on ? C_WHITE : C_HAIR);
+    draw_label(s, ui->label, lbl, on ? C_GREY : C_HAIR, x + 28, y, 2);
 }
 
 void ui_draw_home(UI *ui, SDL_Surface *s, const UIInput *in) {
@@ -166,91 +168,84 @@ void ui_draw_home(UI *ui, SDL_Surface *s, const UIInput *in) {
     header(ui, s, "STUDIO", NULL);
 
     int x = MARGIN;
-    int y = 150;
-    draw_label(s, ui->label, "INPUT SOURCE", C_GREY, x, y, 4);
+    int y = 188;
+    draw_label(s, ui->label, "INPUT SOURCE", C_GREY, x, y, 3);
 
     const char *name = in->present ? in->source : "NO INPUT";
-    int w = draw_text(s, ui->hero, name, in->present ? C_WHITE : C_GREY, x, y + 28);
-    if (in->present) disc(s, x + w + 26, y + 28 + 34, 10, C_RED);
+    int w = draw_text(s, ui->hero, name, in->present ? C_WHITE : C_GREY, x, y + 44);
+    if (in->present) disc(s, x + w + 36, y + 44 + 52, 15, C_RED);
 
     char spec[128];
     if (in->present) {
-        snprintf(spec, sizeof(spec), "%d CH    %d HZ    %s",
+        snprintf(spec, sizeof(spec), "%d CH   %d HZ   %s",
                  in->channels, in->rate, in->format ? in->format : "?");
-        draw_text(s, ui->mono, spec, C_GREY, x, y + 104);
+        draw_text(s, ui->mono, spec, C_GREY, x, y + 156);
     } else {
-        draw_text(s, ui->mono, "CONNECT A USB AUDIO DEVICE", C_GREY, x, y + 104);
+        draw_text(s, ui->mono, "CONNECT A USB AUDIO DEVICE", C_GREY, x, y + 156);
     }
 
     // status dots row
-    int sy = y + 150;
+    int sy = y + 232;
     status_dot(ui, s, x,       sy, "USB",  in->present);
-    status_dot(ui, s, x + 130, sy, "SYNC", in->present);
-    status_dot(ui, s, x + 270, sy, "CLIP", 0);
-    status_dot(ui, s, x + 400, sy, "SD",   1);
+    status_dot(ui, s, x + 200, sy, "SYNC", in->present);
+    status_dot(ui, s, x + 400, sy, "CLIP", 0);
+    status_dot(ui, s, x + 580, sy, "SD",   1);
 
     // record affordance: big ring, centered low
-    int cx = s->w / 2, cy = s->h - 200;
+    int cx = s->w / 2, cy = s->h - 196;
     SDL_Color ring_c = in->present ? C_RED : C_HAIR;
-    ring(s, cx, cy, 64, 58, ring_c);
-    disc(s, cx, cy, 30, in->present ? C_RED : C_PANEL);
+    ring(s, cx, cy, 94, 84, ring_c);
+    disc(s, cx, cy, 46, in->present ? C_RED : C_PANEL);
     draw_label(s, ui->label, "RECORD", in->present ? C_WHITE : C_GREY,
-               cx - 28, cy + 84, 4);
+               cx - 58, cy + 126, 3);
 
     // footer
-    fillc(s, MARGIN, s->h - 70, s->w - 2 * MARGIN, 1, C_HAIR);
-    draw_text_r(s, ui->mono_sm, in->present ? "A  REC      B  QUIT" : "B  QUIT",
-                C_GREY, s->w - MARGIN, s->h - 50);
+    fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
+    draw_text_r(s, ui->mono_sm, in->present ? "A REC    B QUIT" : "B QUIT",
+                C_GREY, s->w - MARGIN, s->h - 64);
 }
 
 void ui_draw_record(UI *ui, SDL_Surface *s, const UIInput *in, const UIRec *r) {
     fillc(s, 0, 0, s->w, s->h, C_BG);
 
     // header: blinking red dot + REC, source on the right
-    if (r->blink) disc(s, MARGIN + 10, 36, 11, C_RED);
-    draw_text(s, ui->h1, "REC", C_WHITE, MARGIN + 32, 24);
+    if (r->blink) disc(s, MARGIN + 16, 54, 15, C_RED);
+    draw_text(s, ui->h1, "REC", C_WHITE, MARGIN + 48, 24);
     char hr[96];
-    snprintf(hr, sizeof(hr), "%s   %d/%s", in->source ? in->source : "",
+    snprintf(hr, sizeof(hr), "%s  %d %s", in->source ? in->source : "",
              in->rate, in->format ? in->format : "");
-    draw_text_r(s, ui->mono, hr, C_GREY, s->w - MARGIN, 32);
-    fillc(s, MARGIN, 78, s->w - 2 * MARGIN, 1, C_HAIR);
+    draw_text_r(s, ui->mono_sm, hr, C_GREY, s->w - MARGIN, 46);
+    fillc(s, MARGIN, 110, s->w - 2 * MARGIN, 2, C_HAIR);
 
-    // hero timecode (DSEG7) with ghost segments behind
+    // hero timecode (big dot-matrix)
     long e = r->elapsed < 0 ? 0 : r->elapsed;
     char tc[16];
     snprintf(tc, sizeof(tc), "%02ld:%02ld:%02ld", e / 3600, (e % 3600) / 60, e % 60);
-    if (ui->seg_big) {
-        draw_text_c(s, ui->seg_big, "88:88:88", (SDL_Color){60, 29, 6, 255}, s->w / 2, 110);
-        draw_text_c(s, ui->seg_big, tc, C_AMBER, s->w / 2, 110);
-    } else {
-        draw_text_c(s, ui->hero, tc, C_AMBER, s->w / 2, 110);
-    }
+    draw_text_c(s, ui->seg_big, tc, C_AMBER, s->w / 2, 150);
 
     // tape machine
-    int midY = s->h / 2 + 70;
-    int R = 116;
-    int lx = s->w / 2 - 200, rx = s->w / 2 + 200;
-    // ribbon
-    fillc(s, lx, midY - 22, rx - lx, 44, C_PANEL);
-    fillc(s, lx, midY - 22, rx - lx, 1, C_HAIR);
-    fillc(s, lx, midY + 22, rx - lx, 1, C_HAIR);
-    // scrolling take line on the ribbon (red dashes moving with angle)
-    int off = (int)(r->angle / (2 * M_PI) * 40.0);
-    for (int dx = -((off) % 40); dx < rx - lx; dx += 40)
-        if (lx + dx >= lx && lx + dx < rx - 16)
-            fillc(s, lx + dx, midY - 2, 22, 4, C_RED);
+    int midY = s->h / 2 + 110;
+    int R = 132;
+    int lx = s->w / 2 - 230, rx = s->w / 2 + 230;
+    fillc(s, lx, midY - 26, rx - lx, 52, C_PANEL);
+    fillc(s, lx, midY - 26, rx - lx, 2, C_HAIR);
+    fillc(s, lx, midY + 24, rx - lx, 2, C_HAIR);
+    // scrolling take line (red dashes moving with angle)
+    int off = (int)(r->angle / (2 * M_PI) * 48.0);
+    for (int dx = -((off) % 48); dx < rx - lx; dx += 48)
+        if (lx + dx >= lx && lx + dx < rx - 20)
+            fillc(s, lx + dx, midY - 3, 26, 6, C_RED);
     draw_reel(s, lx, midY, R, r->angle);
     draw_reel(s, rx, midY, R, r->angle);
     // fixed center playhead
-    fillc(s, s->w / 2 - 1, midY - 40, 2, 80, C_WHITE);
-    line_thick(s, s->w / 2 - 7, midY - 46, s->w / 2 + 7, midY - 46, 2, C_WHITE);
+    fillc(s, s->w / 2 - 1, midY - 48, 3, 96, C_WHITE);
 
     // footer transport
-    fillc(s, MARGIN, s->h - 70, s->w - 2 * MARGIN, 1, C_HAIR);
+    fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
     if (r->take) {
         char lt[160];
         snprintf(lt, sizeof(lt), "REC  %s", r->take);
-        draw_text(s, ui->mono_sm, lt, C_GREY, MARGIN, s->h - 50);
+        draw_text(s, ui->mono_sm, lt, C_GREY, MARGIN, s->h - 64);
     }
-    draw_text_r(s, ui->mono_sm, "A  STOP", C_WHITE, s->w - MARGIN, s->h - 50);
+    draw_text_r(s, ui->mono_sm, "A STOP", C_WHITE, s->w - MARGIN, s->h - 64);
 }
