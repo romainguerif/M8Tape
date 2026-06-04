@@ -441,6 +441,20 @@ static int g_wave_cols, g_wave_dirty;
 static long g_view_span;               // visible frames (zoom)
 static long g_pk_vs = -1, g_pk_span = -1; // peak cache key (view start/span)
 
+// startup stage tracer — flushed+fsync'd so the last line survives a hang/wedge
+static void stage(const char *dir, const char *s) {
+    static int first = 1;
+    char p[720];
+    snprintf(p, sizeof(p), "%s/stage.txt", dir);
+    FILE *f = fopen(p, first ? "w" : "a");
+    first = 0;
+    if (!f) return;
+    fprintf(f, "%s\n", s);
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+}
+
 // --- app --------------------------------------------------------------------
 enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS };
 enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
@@ -450,23 +464,31 @@ static int row_width(int row) { return row < KB_CHAR_ROWS ? KB_COLS : KB_ACTIONS
 
 int main(int argc, char *argv[]) {
     g_out_dir = (argc > 1) ? argv[1] : ".";
+    stage(g_out_dir, "0 main start");
 
     PWR_setCPUSpeed(CPU_SPEED_MENU);
+    stage(g_out_dir, "1 before GFX_init");
     SDL_Surface *screen = GFX_init(MODE_MAIN);
+    stage(g_out_dir, "2 after GFX_init");
     PAD_init();
     PWR_init();
     InitSettings();
+    stage(g_out_dir, "3 after init (PAD/PWR/settings)");
     setup_library();
+    stage(g_out_dir, "4 after setup_library");
     load_settings();
+    stage(g_out_dir, "5 after load_settings");
 
     UI ui;
     char res_dir[600];
     snprintf(res_dir, sizeof(res_dir), "%s/res", g_out_dir);
     int fonts_ok = (ui_load_fonts(&ui, res_dir) == 0);
+    stage(g_out_dir, "6 after fonts");
 
     struct Input in;
     detect_input(&in);
     write_detect_log(g_out_dir, &in);
+    stage(g_out_dir, "7 after detect_input — entering loop");
 
     struct Rec rec = {0};
     enum Mode mode = M_HOME;
@@ -811,7 +833,7 @@ int main(int argc, char *argv[]) {
                 ui_draw_home(&ui, screen, &ui_in);
             }
             GFX_flip(screen);
-            if (!shot_done) { char shot[640]; snprintf(shot, sizeof(shot), "%s/screen.bmp", g_out_dir); SDL_SaveBMP(screen, shot); shot_done = 1; }
+            if (!shot_done) { char shot[640]; snprintf(shot, sizeof(shot), "%s/screen.bmp", g_out_dir); SDL_SaveBMP(screen, shot); shot_done = 1; stage(g_out_dir, "8 first frame drawn"); }
             if (mode == M_HOME) redraw = 0;
         } else if (!redraw) {
             GFX_sync();
