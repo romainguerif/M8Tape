@@ -10,9 +10,23 @@
 // order is the order shown in the picker. (This is the only shared edit when a
 // new effect module is added.)
 extern const H3kAlgoDef micropitch_def;
+extern const H3kAlgoDef dualshift_def;
+extern const H3kAlgoDef diatonic_def;
+extern const H3kAlgoDef ultratap_def;
+extern const H3kAlgoDef delay_def;
+extern const H3kAlgoDef banddelay_def;
+extern const H3kAlgoDef reverb_def;
+extern const H3kAlgoDef reverse_def;
 
 const H3kAlgoDef *const h3k_algos[] = {
     &micropitch_def,
+    &dualshift_def,
+    &diatonic_def,
+    &ultratap_def,
+    &delay_def,
+    &banddelay_def,
+    &reverb_def,
+    &reverse_def,
 };
 const int h3k_algo_count = (int)(sizeof(h3k_algos) / sizeof(h3k_algos[0]));
 

@@ -20,8 +20,10 @@ void dl_clear(DelayLine *d) { if (d && d->buf) for (int i = 0; i < d->n; i++) d-
 void dl_write(DelayLine *d, float v) { d->buf[d->wr] = v; d->wr++; if (d->wr >= d->n) d->wr = 0; }
 float dl_read_samp(const DelayLine *d, float samples) {
     if (samples < 0) samples = 0;
-    if (samples > d->n - 1) samples = (float)(d->n - 1);
-    float pos = (float)d->wr - samples;
+    if (samples > d->n - 2) samples = (float)(d->n - 2);
+    // wr was post-incremented past the last write, so the most recent sample is
+    // at wr-1: a delay of 0 must return "now", not the oldest sample in the line.
+    float pos = (float)(d->wr - 1) - samples;
     while (pos < 0) pos += d->n;
     int i0 = (int)pos; float frac = pos - i0;
     int i1 = i0 + 1; if (i1 >= d->n) i1 -= d->n;
@@ -77,11 +79,15 @@ int ap_init(Allpass *a, int len_samples, float g) {
 }
 void ap_free(Allpass *a) { if (a) { free(a->buf); a->buf = NULL; } }
 float ap_process(Allpass *a, float in) {
-    float buf = a->buf[a->wr];
-    float out = -a->g * in + buf;
-    a->buf[a->wr] = in + a->g * buf;
+    // true (lossless) Schroeder allpass:  y[n] = -g*v[n] + v[n-N],  v[n] = in + g*v[n-N]
+    // H(z) = (-g + z^-N)/(1 - g*z^-N), magnitude 1 at all frequencies — safe inside
+    // reverb feedback loops. (An earlier form fed `in` instead of `v` into the
+    // output and was not unity-gain.)
+    float d = a->buf[a->wr];          // v[n-N]
+    float v = in + a->g * d;          // v[n]
+    a->buf[a->wr] = v;
     a->wr++; if (a->wr >= a->n) a->wr = 0;
-    return out;
+    return -a->g * v + d;
 }
 
 // --- deterministic LCG -------------------------------------------------------
