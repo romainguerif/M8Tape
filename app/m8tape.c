@@ -28,6 +28,7 @@
 #include "utils.h"
 #include "ui.h"
 #include "wav.h"
+#include "player.h"
 
 // --- detected input ---------------------------------------------------------
 struct Input {
@@ -330,9 +331,10 @@ static void start_play(int idx) {
     pid_t pid = fork();
     if (pid < 0) return;
     if (pid == 0) {
-        freopen("/dev/null", "w", stderr); freopen("/dev/null", "w", stdout);
-        execlp("aplay", "aplay", "-q", p, (char *)NULL);
-        _exit(127);
+        char logp[640];
+        snprintf(logp, sizeof(logp), "%s/play.log", g_out_dir);
+        freopen(logp, "w", stderr); freopen("/dev/null", "w", stdout);
+        _exit(play_wav_fade(p) == 0 ? 0 : 1);  // our ALSA player (fade-out on stop)
     }
     g_play_pid = pid; g_play_sel = idx;
 }
