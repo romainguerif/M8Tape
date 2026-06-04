@@ -18,6 +18,8 @@ struct PitchVoice {
     float  base;           // fixed read base (samples) — keeps reads off wr
     float  Wmax;           // max window / search ceiling (samples)
     float  P;              // current window = splice interval (samples), adaptive
+    float  Ptarget;        // de-glitch picks this at a splice; applied only while
+                           // the far tap is muted (g==1) so the seam stays continuous
     float  Pmin, Pmax;     // de-glitch period search bounds (samples)
     float  x;              // crossfade length (samples)
     float  ratio;          // 2^(cents/1200)
@@ -93,7 +95,7 @@ void pv_set_splice(PitchVoice *v, int splice) {
             v->deglitch = 1; v->x = 0.020f * r; v->corrL = 0.012f * r; v->corrStep = 2; v->driftDepth = 0.0f; break;
         case SPLICE_H910:
         default:
-            v->deglitch = 0; v->x = 0.012f * r; v->driftDepth = 3.0f; v->P = v->Wmax; break;
+            v->deglitch = 0; v->x = 0.012f * r; v->driftDepth = 3.0f; v->P = v->Wmax; v->Ptarget = v->Wmax; break;
     }
 }
 
@@ -106,6 +108,7 @@ PitchVoice *pv_create(int rate) {
     v->Pmin = 0.005f * v->rate;     // 5..50 ms period search (per the H949 patent)
     v->Pmax = v->Wmax;
     v->P    = v->Wmax;
+    v->Ptarget = v->Wmax;
     v->x    = 0.012f * v->rate;
     v->ratio = 1.0f;
     v->corrL = 0.008f * v->rate; v->corrStep = 4;
@@ -129,6 +132,10 @@ float pv_process(PitchVoice *v, float in) {
     float xeff = v->x;                         // crossfade must fit inside P
     if (xeff > 0.45f * v->P) xeff = 0.45f * v->P;
     if (xeff < 1.0f) xeff = 1.0f;
+    // Apply a pending de-glitch window ONLY while the far tap is muted (g==1, i.e.
+    // d >= xeff). The far tap delay then never jumps while it is audible, and P is
+    // already at target by the next wrap, so the splice stays continuous (no click).
+    if (v->deglitch && d >= xeff) v->P = v->Ptarget;
     float s1 = pv_read(v, v->base + d);          // incoming tap (closer)
     float s2 = pv_read(v, v->base + d + v->P);   // outgoing tap (one window back)
     float g = d / xeff; if (g > 1.0f) g = 1.0f; if (g < 0.0f) g = 0.0f;
@@ -144,9 +151,9 @@ float pv_process(PitchVoice *v, float in) {
     v->phase += (1.0f - ratio);
     if (v->phase >= v->P) {                     // splice (downshift)
         v->phase -= v->P;
-        if (v->deglitch) v->P = pv_best_period(v);
+        if (v->deglitch) v->Ptarget = pv_best_period(v);   // applied later, while muted
     } else if (v->phase < 0.0f) {               // splice (upshift)
-        if (v->deglitch) v->P = pv_best_period(v);
+        if (v->deglitch) v->Ptarget = pv_best_period(v);
         v->phase += v->P;
     }
     return out;

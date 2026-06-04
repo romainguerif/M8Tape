@@ -78,6 +78,9 @@ typedef struct {
     float f0;               // last estimated fundamental (Hz), 0 = unvoiced now
     int   midi;             // last voiced MIDI note (rounded), -1 = none yet
     int   haveNote;         // 1 once we've ever locked a note
+    int   noteHist[7];      // recent rounded-MIDI estimates -> median (anti-flicker)
+    int   nHist;            // count in noteHist
+    int   unvoiced;         // consecutive unvoiced frames (forget history after a gap)
 
     // smoothing of the semitone shift -> no zipper noise on note changes
     float shift;            // current (smoothed) shift in semitones
@@ -201,6 +204,19 @@ static int climb_degrees(int tonic, int scale, int deg, int oct, int steps) {
     return tonic + 12 * (oct + addOct) + SCALE_TBL[scale][newDeg];
 }
 
+// Median of the recent note estimates. A single bad frame (octave error, a
+// semitone flip at a vibrato peak) is outvoted instead of jerking the harmony.
+static int median_note(const int *h, int n) {
+    int t[7];
+    for (int i = 0; i < n; i++) t[i] = h[i];
+    for (int i = 1; i < n; i++) {            // insertion sort (n <= 7)
+        int k = t[i], j = i - 1;
+        while (j >= 0 && t[j] > k) { t[j + 1] = t[j]; j--; }
+        t[j + 1] = k;
+    }
+    return t[n / 2];
+}
+
 static void *diat_create(int rate) {
     DiatState *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
@@ -228,8 +244,15 @@ static void diat_update_target(DiatState *s, float f0,
                                int tonic, int scale, int ivalIdx) {
     int steps = INTERVAL_STEPS[ivalIdx];
     if (f0 > 0.0f) {
+        s->unvoiced = 0;
         float fmidi = hz_to_midi(f0);
-        int   midi  = (int)lrintf(fmidi);
+        int   midiRaw = (int)lrintf(fmidi);
+        // Push into the history ring and use the MEDIAN as the stable note, so a
+        // single-frame octave/semitone outlier can't jerk the harmony (the main
+        // source of the warble/artefacts on real, expressive material).
+        if (s->nHist < 7) s->noteHist[s->nHist++] = midiRaw;
+        else { for (int k = 1; k < 7; k++) s->noteHist[k - 1] = s->noteHist[k]; s->noteHist[6] = midiRaw; }
+        int midi = median_note(s->noteHist, s->nHist);
         int deg, oct;
         int snapped = snap_to_scale(midi, tonic, scale, &deg, &oct);
         int target  = climb_degrees(tonic, scale, deg, oct, steps);
@@ -243,14 +266,18 @@ static void diat_update_target(DiatState *s, float f0,
         s->shiftTarget = (float)(target - snapped);
         s->midi = midi;
         s->haveNote = 1;
-    } else if (!s->haveNote) {
-        // Never locked a note: fall back to a fixed chromatic interval so the
-        // effect still does something sensible on un-pitched/transient input.
-        // Use the diatonic interval measured from the tonic as a stand-in.
-        int target = climb_degrees(tonic, scale, 0, 0, steps);
-        s->shiftTarget = (float)(target - tonic);
+    } else {
+        // Unvoiced: HOLD the current shift (sustained notes and gaps between words
+        // must not snap the harmony to zero). After a real gap, forget the note
+        // history so the next phrase locks fresh instead of medianing across silence.
+        if (++s->unvoiced > 4) s->nHist = 0;
+        if (!s->haveNote) {
+            // Never locked a note yet: fixed diatonic interval from the tonic so
+            // the effect still does something sensible on un-pitched input.
+            int target = climb_degrees(tonic, scale, 0, 0, steps);
+            s->shiftTarget = (float)(target - tonic);
+        }
     }
-    // voiced-but-unsure or unvoiced with a prior note: hold s->shiftTarget.
 }
 
 static void diat_block(void *st, const float *dry, int n, const float *p, float *outLR) {

@@ -855,6 +855,16 @@ int main(int argc, char *argv[]) {
             redraw = 1;
         } else if (mode == M_H3000) {
             const H3kAlgoDef *def = h3k_algos[fx_algo];
+            // L1/R1 = previous/next effect without leaving the FX screen (loads
+            // that algo's default params; restarts the preview so A/B is instant).
+            int algo_d = PAD_justPressed(BTN_R1) ? 1 : PAD_justPressed(BTN_L1) ? -1 : 0;
+            if (algo_d) {
+                fx_algo = (fx_algo + algo_d + h3k_algo_count) % h3k_algo_count;
+                def = h3k_algos[fx_algo];
+                h3k_defaults(fx_algo, fx_params);
+                h_sel = 0;
+                if (g_pv_active) { preview_stop(); preview_start(&g_au, fx_algo, fx_params); }
+            }
             if (NAV(BTN_UP))   { if (h_sel > 0) h_sel--; }
             if (NAV(BTN_DOWN)) { if (h_sel < def->nparams - 1) h_sel++; }
             int dl = NAV(BTN_RIGHT) ? 1 : NAV(BTN_LEFT) ? -1 : 0;

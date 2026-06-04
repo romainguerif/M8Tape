@@ -352,7 +352,7 @@ void ui_draw_fx(UI *ui, SDL_Surface *s, const char *algo,
         draw_text_r(s, ui->h1, values[i], i == sel ? C_AMBER : C_GREY, s->w - MARGIN - 40, y + 6);
     }
     fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
-    draw_text(s, ui->mono_sm, "<> ADJUST   A PREVIEW", C_GREY, MARGIN, s->h - 64);
+    draw_text(s, ui->mono_sm, "<> ADJUST  L/R FX  A PREVIEW", C_GREY, MARGIN, s->h - 64);
     draw_text_r(s, ui->mono_sm, "START RENDER   B BACK", C_GREY, s->w - MARGIN, s->h - 64);
 }
 
