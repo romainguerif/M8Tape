@@ -184,7 +184,7 @@ static void setup_library(void) {
 }
 
 // --- recording --------------------------------------------------------------
-struct Rec { int active; pid_t pid; time_t start; char path[512]; };
+struct Rec { int active; pid_t pid; time_t start; char path[700]; };
 
 static int start_rec(struct Rec *r, const struct Input *in) {
     if (!in->present) return 0;
@@ -226,11 +226,6 @@ static void stop_rec(struct Rec *r) {
     }
     r->active = 0; r->pid = 0;
     // card stays async until finalize_save() (so the split writes fast)
-}
-
-static const char *basename_of(const char *p) {
-    const char *b = strrchr(p, '/');
-    return b ? b + 1 : p;
 }
 
 // sanitize: keep [A-Za-z0-9._-], turn anything else into '_'; ensure non-empty.
@@ -368,7 +363,7 @@ static float g_mn[2048], g_mx[2048];   // cached waveform peaks
 static int g_wave_cols, g_wave_dirty;
 
 // --- app --------------------------------------------------------------------
-enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU };
+enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT };
 enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
 
 #define NAV(b) (PAD_justPressed(b) || PAD_justRepeated(b))
@@ -399,7 +394,7 @@ int main(int argc, char *argv[]) {
     char last_take[64] = {0};
 
     // naming/keyboard state
-    char name[40] = {0};
+    char name[64] = {0};
     int caps = 0, krow = 1, kcol = 0, rec_channels = 2, name_purpose = NP_REC;
 
     // actions menu + move state
@@ -509,11 +504,11 @@ int main(int argc, char *argv[]) {
                 else if (!strcmp(op, "EDIT")) {
                     char p[1300]; snprintf(p, sizeof(p), "%s/%s", g_cur, g_ents[g_bsel].name);
                     stop_play();
-                    if (wav_load(p, &g_au) == 0) {
+                    if (wav_load(p, &g_au) == 0 && g_au.frames > 0) {
                         snprintf(g_edit_path, sizeof(g_edit_path), "%s", p);
                         g_in = 0; g_out = g_au.frames; g_curpos = 0; g_modified = 0;
                         g_wave_dirty = 1; emenu_sel = 0; emenu_scroll = 0; mode = M_EDIT;
-                    } else mode = M_BROWSE;
+                    } else { audio_free(&g_au); mode = M_BROWSE; }
                 }
                 else if (!strcmp(op, "RENAME")) {
                     snprintf(name, sizeof(name), "%s", g_ents[g_bsel].name);
@@ -574,7 +569,14 @@ int main(int argc, char *argv[]) {
                 else if (wav_save_range(g_tmpplay, &g_au, g_in, g_out) == 0) start_play_path(g_tmpplay, -2);
             }
             if (PAD_justPressed(BTN_START)) { emenu_sel = 0; emenu_scroll = 0; mode = M_EMENU; }
-            if (PAD_justPressed(BTN_B)) { stop_play(); audio_free(&g_au); mode = M_BROWSE; }
+            if (PAD_justPressed(BTN_B)) {
+                if (g_modified) mode = M_EDIT_EXIT;
+                else { stop_play(); audio_free(&g_au); mode = M_BROWSE; }
+            }
+            redraw = 1;
+        } else if (mode == M_EDIT_EXIT) {
+            if (PAD_justPressed(BTN_A)) { stop_play(); audio_free(&g_au); mode = M_BROWSE; }
+            if (PAD_justPressed(BTN_B)) mode = M_EDIT;
             redraw = 1;
         } else if (mode == M_EMENU) {
             int mvis = ui_menu_visible_rows(screen);
@@ -597,7 +599,11 @@ int main(int argc, char *argv[]) {
                 else if (!strcmp(op, "HALF RATE")) { au_halve_rate(&g_au); g_in = 0; g_out = g_au.frames; g_curpos = 0; }
                 else if (!strcmp(op, "SAVE")) { remount("async"); wav_save(g_edit_path, &g_au); remount("sync"); g_modified = 0; list_dir(); back = 0; }
                 else if (!strcmp(op, "SAVE AS")) { name[0] = '\0'; name_purpose = NP_SAVEAS; caps = 0; krow = 1; kcol = 0; mode = M_NAME; back = -1; }
-                else if (!strcmp(op, "EXIT")) { stop_play(); audio_free(&g_au); mode = M_BROWSE; back = -1; }
+                else if (!strcmp(op, "EXIT")) {
+                    back = -1;
+                    if (g_modified) mode = M_EDIT_EXIT;
+                    else { stop_play(); audio_free(&g_au); mode = M_BROWSE; }
+                }
                 if (back == 1) { g_modified = 1; g_wave_dirty = 1; mode = M_EDIT; }
                 else if (back == 0) { g_wave_dirty = 1; mode = M_EDIT; }
             }
@@ -659,6 +665,8 @@ int main(int argc, char *argv[]) {
                 ui_draw_editor(&ui, screen, nm, info, g_mn, g_mx, cols, inf, outf, curf, g_play_pid > 0);
             } else if (mode == M_EMENU) {
                 ui_draw_menu(&ui, screen, "EDIT", EMENU, EMENU_N, emenu_sel, emenu_scroll);
+            } else if (mode == M_EDIT_EXIT) {
+                ui_draw_confirm(&ui, screen, "DISCARD?", "UNSAVED CHANGES");
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }
