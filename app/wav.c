@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 static uint32_t rd_u32(const unsigned char *p) {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
@@ -105,4 +106,172 @@ int wav_split(const char *in_path, const char *out_dir, const char *prefix) {
     free(out);
     fclose(in);
     return io_err ? -1 : (int)pairs;
+}
+
+// --- in-memory audio (editor) -----------------------------------------------
+static float s8(unsigned char b)  { return ((int)b - 128) / 128.0f; }
+static float s16(const unsigned char *p) { return (int16_t)(p[0] | p[1] << 8) / 32768.0f; }
+static float s24(const unsigned char *p) {
+    int v = p[0] | p[1] << 8 | p[2] << 16; if (v & 0x800000) v |= ~0xFFFFFF;
+    return v / 8388608.0f;
+}
+static float s32(const unsigned char *p) { return (int32_t)rd_u32(p) / 2147483648.0f; }
+
+static float clampf(float f) { return f < -1.0f ? -1.0f : f > 1.0f ? 1.0f : f; }
+
+int wav_load(const char *path, Audio *a) {
+    memset(a, 0, sizeof(*a));
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    unsigned char hdr[12];
+    if (fread(hdr, 1, 12, f) != 12 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4)) { fclose(f); return -1; }
+    int ch = 0, bits = 0; uint32_t rate = 0, data_size = 0; int hf = 0, hd = 0;
+    for (;;) {
+        unsigned char ck[8];
+        if (fread(ck, 1, 8, f) != 8) break;
+        uint32_t sz = rd_u32(ck + 4);
+        if (!memcmp(ck, "fmt ", 4)) {
+            unsigned char fb[40]; uint32_t n = sz > sizeof(fb) ? (uint32_t)sizeof(fb) : sz;
+            if (fread(fb, 1, n, f) != n) { fclose(f); return -1; }
+            ch = rd_u16(fb + 2); rate = rd_u32(fb + 4); bits = rd_u16(fb + 14); hf = 1;
+            if (sz > n) fseek(f, (long)(sz - n), SEEK_CUR);
+            if (sz & 1) fseek(f, 1, SEEK_CUR);
+        } else if (!memcmp(ck, "data", 4)) { data_size = sz; hd = 1; break; }
+        else fseek(f, (long)(sz + (sz & 1)), SEEK_CUR);
+    }
+    if (!hf || !hd || ch < 1 || bits < 8 || (bits & 7)) { fclose(f); return -1; }
+    int bps = bits / 8;
+    long frames = data_size / (ch * bps);
+    float *data = malloc((size_t)frames * ch * sizeof(float));
+    if (!data) { fclose(f); return -1; }
+    unsigned char *raw = malloc((size_t)frames * ch * bps);
+    if (!raw) { free(data); fclose(f); return -1; }
+    if (fread(raw, 1, (size_t)frames * ch * bps, f) != (size_t)frames * ch * bps) { /* short ok */ }
+    fclose(f);
+    for (long i = 0; i < frames * ch; i++) {
+        const unsigned char *p = raw + (size_t)i * bps;
+        data[i] = bps == 2 ? s16(p) : bps == 3 ? s24(p) : bps == 4 ? s32(p) : s8(p[0]);
+    }
+    free(raw);
+    a->ch = ch; a->rate = (int)rate; a->bits = bits; a->frames = frames; a->data = data;
+    return 0;
+}
+
+static void put_sample(unsigned char *p, int bps, float f) {
+    f = clampf(f);
+    if (bps == 2) { int v = (int)(f * 32767); p[0] = v; p[1] = v >> 8; }
+    else if (bps == 3) { int v = (int)(f * 8388607); p[0] = v; p[1] = v >> 8; p[2] = v >> 16; }
+    else if (bps == 4) { long v = (long)(f * 2147483647.0); p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
+    else { int v = (int)(f * 127) + 128; p[0] = (unsigned char)v; }
+}
+
+static int write_range(const char *path, const Audio *a, long s, long e) {
+    if (s < 0) s = 0; if (e > a->frames) e = a->frames; if (e < s) e = s;
+    int bps = a->bits / 8; long frames = e - s;
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    write_header(f, (uint16_t)a->ch, (uint32_t)a->rate, (uint16_t)a->bits, (uint32_t)(frames * a->ch * bps));
+    unsigned char buf[4];
+    for (long i = s * a->ch; i < e * a->ch; i++) { put_sample(buf, bps, a->data[i]); fwrite(buf, 1, bps, f); }
+    fclose(f);
+    return 0;
+}
+int wav_save(const char *path, const Audio *a) { return write_range(path, a, 0, a->frames); }
+int wav_save_range(const char *path, const Audio *a, long s, long e) { return write_range(path, a, s, e); }
+
+void audio_free(Audio *a) { free(a->data); a->data = NULL; a->frames = 0; }
+
+void au_normalize(Audio *a) {
+    float peak = 0;
+    for (long i = 0; i < a->frames * a->ch; i++) { float v = fabsf(a->data[i]); if (v > peak) peak = v; }
+    if (peak <= 0.0001f || peak >= 0.999f) return;
+    float g = 0.99f / peak;
+    for (long i = 0; i < a->frames * a->ch; i++) a->data[i] *= g;
+}
+
+void au_reverse(Audio *a, long s, long e) {
+    if (s < 0) s = 0; if (e > a->frames) e = a->frames;
+    long i = s, j = e - 1;
+    while (i < j) {
+        for (int c = 0; c < a->ch; c++) {
+            float t = a->data[i * a->ch + c];
+            a->data[i * a->ch + c] = a->data[j * a->ch + c];
+            a->data[j * a->ch + c] = t;
+        }
+        i++; j--;
+    }
+}
+
+void au_fade_in(Audio *a, long s, long e) {
+    if (s < 0) s = 0; if (e > a->frames) e = a->frames;
+    long n = e - s; if (n < 1) return;
+    for (long i = 0; i < n; i++) { float g = (float)i / n; for (int c = 0; c < a->ch; c++) a->data[(s + i) * a->ch + c] *= g; }
+}
+void au_fade_out(Audio *a, long s, long e) {
+    if (s < 0) s = 0; if (e > a->frames) e = a->frames;
+    long n = e - s; if (n < 1) return;
+    for (long i = 0; i < n; i++) { float g = 1.0f - (float)i / n; for (int c = 0; c < a->ch; c++) a->data[(s + i) * a->ch + c] *= g; }
+}
+
+int au_crop(Audio *a, long s, long e) {
+    if (s < 0) s = 0; if (e > a->frames) e = a->frames; if (e <= s) return -1;
+    long n = e - s;
+    memmove(a->data, a->data + s * a->ch, (size_t)n * a->ch * sizeof(float));
+    a->frames = n;
+    return 0;
+}
+
+int au_to_mono(Audio *a) {
+    if (a->ch <= 1) return 0;
+    float *nd = malloc((size_t)a->frames * sizeof(float));
+    if (!nd) return -1;
+    for (long i = 0; i < a->frames; i++) {
+        float sum = 0; for (int c = 0; c < a->ch; c++) sum += a->data[i * a->ch + c];
+        nd[i] = sum / a->ch;
+    }
+    free(a->data); a->data = nd; a->ch = 1;
+    return 0;
+}
+
+int au_halve_rate(Audio *a) {
+    long nf = a->frames / 2;
+    if (nf < 1) return -1;
+    float *nd = malloc((size_t)nf * a->ch * sizeof(float));
+    if (!nd) return -1;
+    for (long i = 0; i < nf; i++)
+        for (int c = 0; c < a->ch; c++)
+            nd[i * a->ch + c] = 0.5f * (a->data[(2 * i) * a->ch + c] + a->data[(2 * i + 1) * a->ch + c]);
+    free(a->data); a->data = nd; a->frames = nf; a->rate /= 2;
+    return 0;
+}
+
+void au_silence_bounds(const Audio *a, float thresh, long *s, long *e) {
+    long first = 0, last = a->frames;
+    for (long i = 0; i < a->frames; i++) {
+        float m = 0; for (int c = 0; c < a->ch; c++) { float v = fabsf(a->data[i * a->ch + c]); if (v > m) m = v; }
+        if (m > thresh) { first = i; break; }
+    }
+    for (long i = a->frames - 1; i >= 0; i--) {
+        float m = 0; for (int c = 0; c < a->ch; c++) { float v = fabsf(a->data[i * a->ch + c]); if (v > m) m = v; }
+        if (m > thresh) { last = i + 1; break; }
+    }
+    if (last <= first) { first = 0; last = a->frames; }
+    *s = first; *e = last;
+}
+
+void au_peaks(const Audio *a, long s, long e, int cols, float *mn, float *mx) {
+    if (s < 0) s = 0; if (e > a->frames) e = a->frames; if (e < s) e = s;
+    long span = e - s;
+    for (int c = 0; c < cols; c++) {
+        long f0 = s + (long)((double)span * c / cols);
+        long f1 = s + (long)((double)span * (c + 1) / cols);
+        if (f1 <= f0) f1 = f0 + 1; if (f1 > e) f1 = e;
+        float lo = 0, hi = 0;
+        for (long i = f0; i < f1; i++)
+            for (int ch = 0; ch < a->ch; ch++) {
+                float v = a->data[i * a->ch + ch];
+                if (v < lo) lo = v; if (v > hi) hi = v;
+            }
+        mn[c] = lo; mx[c] = hi;
+    }
 }

@@ -248,21 +248,72 @@ void ui_draw_browser(UI *ui, SDL_Surface *s, const char *crumb,
     draw_text_r(s, ui->mono_sm, hints ? hints : "", C_GREY, s->w - MARGIN, s->h - 62);
 }
 
+#define MENU_TOP 180
+#define MENU_ROWH 78
+int ui_menu_visible_rows(SDL_Surface *s) {
+    int n = ((s->h - 90) - MENU_TOP) / MENU_ROWH;
+    return n < 1 ? 1 : n;
+}
 void ui_draw_menu(UI *ui, SDL_Surface *s, const char *title,
-                  const char **opts, int count, int sel) {
+                  const char **opts, int count, int sel, int scroll) {
     fillc(s, 0, 0, s->w, s->h, C_BG);
     draw_label(s, ui->label, title ? title : "ACTIONS", C_GREY, MARGIN, 44, 2);
     fillc(s, MARGIN, 112, s->w - 2 * MARGIN, 2, C_HAIR);
-    int top = 200, rowh = 86;
-    for (int i = 0; i < count; i++) {
-        int y = top + i * rowh;
-        if (i == sel) {
-            fillc(s, MARGIN, y, s->w - 2 * MARGIN, rowh - 12, C_PANEL);
-            fillc(s, MARGIN, y, 7, rowh - 12, C_RED);
+    int vis = ui_menu_visible_rows(s);
+    for (int i = 0; i < vis; i++) {
+        int idx = scroll + i;
+        if (idx >= count) break;
+        int y = MENU_TOP + i * MENU_ROWH;
+        if (idx == sel) {
+            fillc(s, MARGIN, y, s->w - 2 * MARGIN, MENU_ROWH - 12, C_PANEL);
+            fillc(s, MARGIN, y, 7, MENU_ROWH - 12, C_RED);
         }
-        draw_text(s, ui->hero, opts[i], i == sel ? C_WHITE : C_GREY, MARGIN + 40, y + 4);
+        draw_text(s, ui->h1, opts[idx], idx == sel ? C_WHITE : C_GREY, MARGIN + 40, y + 6);
     }
     draw_text_r(s, ui->mono_sm, "A SELECT   B BACK", C_GREY, s->w - MARGIN, s->h - 62);
+}
+
+#define WF_TOP 168
+#define WF_BOT 540
+int ui_editor_cols(SDL_Surface *s) { return s->w - 2 * MARGIN; }
+
+void ui_draw_editor(UI *ui, SDL_Surface *s, const char *name, const char *info,
+                    const float *mn, const float *mx, int cols,
+                    double in_frac, double out_frac, double cur_frac, int playing) {
+    fillc(s, 0, 0, s->w, s->h, C_BG);
+    draw_text(s, ui->h1, name ? name : "", C_WHITE, MARGIN, 24);
+    if (info) draw_text_r(s, ui->mono_sm, info, C_GREY, s->w - MARGIN, 40);
+    fillc(s, MARGIN, 108, s->w - 2 * MARGIN, 2, C_HAIR);
+
+    int x0 = MARGIN, w = cols;
+    int mid = (WF_TOP + WF_BOT) / 2, half = (WF_BOT - WF_TOP) / 2 - 6;
+    int in_x  = x0 + (int)(in_frac  * w);
+    int out_x = x0 + (int)(out_frac * w);
+
+    // selection background band
+    fillc(s, in_x, WF_TOP, out_x - in_x, WF_BOT - WF_TOP, C_PANEL);
+    // center line
+    fillc(s, x0, mid, w, 1, C_HAIR);
+    // waveform columns (in selection = white, outside = dim)
+    for (int i = 0; i < w; i++) {
+        int x = x0 + i;
+        int top = mid - (int)(mx[i] * half);
+        int bot = mid - (int)(mn[i] * half);
+        if (bot < top) { int t = top; top = bot; bot = t; }
+        if (bot == top) bot = top + 1;
+        SDL_Color c = (x >= in_x && x <= out_x) ? C_WHITE : C_GREY;
+        fillc(s, x, top, 1, bot - top, c);
+    }
+    // markers + cursor
+    fillc(s, in_x, WF_TOP, 2, WF_BOT - WF_TOP, C_AMBER);
+    fillc(s, out_x, WF_TOP, 2, WF_BOT - WF_TOP, C_AMBER);
+    int cur_x = x0 + (int)(cur_frac * w);
+    fillc(s, cur_x, WF_TOP - 8, 3, WF_BOT - WF_TOP + 16, playing ? C_RED : C_WHITE);
+
+    // footer
+    fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
+    draw_text(s, ui->mono_sm, "<>MOVE  L/R FAST  Y IN  X OUT", C_GREY, MARGIN, s->h - 64);
+    draw_text_r(s, ui->mono_sm, "A PLAY   START EDIT   B EXIT", C_GREY, s->w - MARGIN, s->h - 64);
 }
 
 void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2) {

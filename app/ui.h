@@ -73,7 +73,16 @@ void ui_draw_browser(UI *ui, SDL_Surface *s, const char *crumb,
 int  ui_browser_visible_rows(SDL_Surface *s); // rows that fit, for scrolling
 
 void ui_draw_menu(UI *ui, SDL_Surface *s, const char *title,
-                  const char **opts, int count, int sel);
+                  const char **opts, int count, int sel, int scroll);
+int  ui_menu_visible_rows(SDL_Surface *s);
 void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2);
+
+// --- waveform editor --------------------------------------------------------
+// mn[i]/mx[i] are min/max peaks per column (length = cols, the waveform pixel
+// width). in/out/cur are positions as fractions [0,1] of the file.
+void ui_draw_editor(UI *ui, SDL_Surface *s, const char *name, const char *info,
+                    const float *mn, const float *mx, int cols,
+                    double in_frac, double out_frac, double cur_frac, int playing);
+int  ui_editor_cols(SDL_Surface *s); // waveform pixel width
 
 #endif

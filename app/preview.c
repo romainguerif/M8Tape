@@ -3,6 +3,7 @@
 //   clang preview.c ui.c $(pkg-config --cflags --libs sdl2 SDL2_ttf) -lm -o preview
 #include "ui.h"
 #include <stdio.h>
+#include <math.h>
 
 static void save(SDL_Surface *s, const char *name) {
     SDL_SaveBMP(s, name);
@@ -37,9 +38,27 @@ int main(void) {
                     "A OPEN/PLAY  Y ACTIONS  X NEW FOLDER  B BACK");
     save(s, "out_browser.bmp");
 
-    const char *opts[] = {"PLAY", "RENAME", "MOVE", "DELETE"};
-    ui_draw_menu(&ui, s, "ACTIONS", opts, 4, 1);
+    const char *opts[] = {"PLAY", "EDIT", "RENAME", "MOVE", "DELETE"};
+    ui_draw_menu(&ui, s, "ACTIONS", opts, 5, 1, 0);
     save(s, "out_menu.bmp");
+
+    int cols = ui_editor_cols(s);
+    static float mn[2048], mx[2048];
+    for (int i = 0; i < cols; i++) {
+        double t = (double)i / cols;
+        double env = 0.15 + 0.85 * fabs(sin(t * 6.2831 * 3));
+        double a = env * (0.35 + 0.6 * ((i * 37 % 100) / 100.0));
+        mx[i] = (float)a; mn[i] = (float)-a;
+    }
+    ui_draw_editor(&ui, s, "rain_forest.wav", "0:42  44100HZ  2CH  24BIT",
+                   mn, mx, cols, 0.18, 0.72, 0.40, 0);
+    save(s, "out_editor.bmp");
+
+    const char *eopts[] = {"NORMALIZE", "FADE IN", "FADE OUT", "REVERSE",
+        "TRIM TO SELECTION", "TRIM SILENCE", "TO MONO", "16-BIT", "HALF RATE",
+        "SAVE", "SAVE AS", "EXIT"};
+    ui_draw_menu(&ui, s, "EDIT", eopts, 12, 4, 0);
+    save(s, "out_emenu.bmp");
 
     SDL_FreeSurface(s);
     ui_free(&ui);

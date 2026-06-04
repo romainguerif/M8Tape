@@ -169,6 +169,7 @@ static void remount(const char *opt) {
 static const char *g_out_dir = ".";       // pak dir (logs, screenshot)
 static char g_lib[512];                    // <SDCARD>/M8Tape
 static char g_tmp[600];                    // raw take staged here before naming
+static char g_tmpplay[640];                // selection audition temp
 
 static void setup_library(void) {
     char mp[256];
@@ -179,6 +180,7 @@ static void setup_library(void) {
     snprintf(uns, sizeof(uns), "%s/Unsorted", g_lib);
     mkdir(uns, 0777);
     snprintf(g_tmp, sizeof(g_tmp), "%s/.tmprec.wav", g_lib);
+    snprintf(g_tmpplay, sizeof(g_tmpplay), "%s/.tmpplay.wav", g_lib);
 }
 
 // --- recording --------------------------------------------------------------
@@ -324,19 +326,22 @@ static void stop_play(void) {
     if (g_play_pid > 0) { kill(g_play_pid, SIGTERM); int st; waitpid(g_play_pid, &st, 0); }
     g_play_pid = 0; g_play_sel = -1;
 }
-static void start_play(int idx) {
+static void start_play_path(const char *path, int sel) {
     stop_play();
-    char p[1300];
-    snprintf(p, sizeof(p), "%s/%s", g_cur, g_ents[idx].name);
     pid_t pid = fork();
     if (pid < 0) return;
     if (pid == 0) {
         char logp[640];
         snprintf(logp, sizeof(logp), "%s/play.log", g_out_dir);
         freopen(logp, "w", stderr); freopen("/dev/null", "w", stdout);
-        _exit(play_wav_fade(p) == 0 ? 0 : 1);  // our ALSA player (fade-out on stop)
+        _exit(play_wav_fade(path) == 0 ? 0 : 1);  // our ALSA player (fade-out on stop)
     }
-    g_play_pid = pid; g_play_sel = idx;
+    g_play_pid = pid; g_play_sel = sel;
+}
+static void start_play(int idx) {
+    char p[1300];
+    snprintf(p, sizeof(p), "%s/%s", g_cur, g_ents[idx].name);
+    start_play_path(p, idx);
 }
 
 static void enter_dir(const char *name) {
@@ -354,9 +359,17 @@ static void go_up(void) {
     g_bsel = 0; g_bscroll = 0; list_dir();
 }
 
+// --- editor state -----------------------------------------------------------
+static Audio g_au;
+static long g_in, g_out, g_curpos;
+static int g_modified;
+static char g_edit_path[1300];
+static float g_mn[2048], g_mx[2048];   // cached waveform peaks
+static int g_wave_cols, g_wave_dirty;
+
 // --- app --------------------------------------------------------------------
-enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE };
-enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER };
+enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU };
+enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
 
 #define NAV(b) (PAD_justPressed(b) || PAD_justRepeated(b))
 static int row_width(int row) { return row < KB_CHAR_ROWS ? KB_COLS : KB_ACTIONS; }
@@ -390,8 +403,15 @@ int main(int argc, char *argv[]) {
     int caps = 0, krow = 1, kcol = 0, rec_channels = 2, name_purpose = NP_REC;
 
     // actions menu + move state
-    const char *menu_opts[5]; int menu_n = 0, menu_sel = 0;
+    const char *menu_opts[6]; int menu_n = 0, menu_sel = 0, menu_scroll = 0;
     char move_from[1024] = {0}, move_name[256] = {0};
+
+    // editor ops menu
+    static const char *EMENU[] = {"NORMALIZE", "FADE IN", "FADE OUT", "REVERSE",
+        "TRIM TO SELECTION", "TRIM SILENCE", "TO MONO", "16-BIT", "HALF RATE",
+        "SAVE", "SAVE AS", "EXIT"};
+    const int EMENU_N = 12;
+    int emenu_sel = 0, emenu_scroll = 0;
 
     while (!quitting) {
         GFX_startFrame();
@@ -442,6 +462,10 @@ int main(int argc, char *argv[]) {
                     if (g_ents[g_bsel].is_dir) snprintf(newp, sizeof(newp), "%s/%s", g_cur, nm);
                     else snprintf(newp, sizeof(newp), "%s/%s.wav", g_cur, nm);
                     rename(oldp, newp); stop_play(); list_dir(); mode = M_BROWSE;
+                } else if (name_purpose == NP_SAVEAS) {
+                    char dest[1400]; snprintf(dest, sizeof(dest), "%s/%s.wav", g_cur, nm);
+                    remount("async"); wav_save(dest, &g_au); remount("sync");
+                    g_modified = 0; audio_free(&g_au); list_dir(); mode = M_BROWSE;
                 } else {
                     char np[1300]; snprintf(np, sizeof(np), "%s/%s", g_cur, nm); mkdir(np, 0777);
                     list_dir(); mode = M_BROWSE;
@@ -463,21 +487,34 @@ int main(int argc, char *argv[]) {
             if (PAD_justPressed(BTN_X)) { name[0] = '\0'; name_purpose = NP_NEWFOLDER; caps = 0; krow = 1; kcol = 0; mode = M_NAME; }
             if (PAD_justPressed(BTN_Y) && g_nent > 0) {
                 menu_n = 0;
-                menu_opts[menu_n++] = g_ents[g_bsel].is_dir ? "OPEN" : "PLAY";
+                if (g_ents[g_bsel].is_dir) menu_opts[menu_n++] = "OPEN";
+                else { menu_opts[menu_n++] = "PLAY"; menu_opts[menu_n++] = "EDIT"; }
                 menu_opts[menu_n++] = "RENAME";
                 menu_opts[menu_n++] = "MOVE";
                 menu_opts[menu_n++] = "DELETE";
-                menu_sel = 0; mode = M_MENU;
+                menu_sel = 0; menu_scroll = 0; mode = M_MENU;
             }
             redraw = 1;
         } else if (mode == M_MENU) {
+            int mvis = ui_menu_visible_rows(screen);
             if (NAV(BTN_UP))   { if (menu_sel > 0) menu_sel--; }
             if (NAV(BTN_DOWN)) { if (menu_sel < menu_n - 1) menu_sel++; }
+            if (menu_sel < menu_scroll) menu_scroll = menu_sel;
+            if (menu_sel >= menu_scroll + mvis) menu_scroll = menu_sel - mvis + 1;
             if (PAD_justPressed(BTN_B)) mode = M_BROWSE;
             if (PAD_justPressed(BTN_A)) {
                 const char *op = menu_opts[menu_sel];
                 if (!strcmp(op, "OPEN")) { enter_dir(g_ents[g_bsel].name); mode = M_BROWSE; }
                 else if (!strcmp(op, "PLAY")) { start_play(g_bsel); mode = M_BROWSE; }
+                else if (!strcmp(op, "EDIT")) {
+                    char p[1300]; snprintf(p, sizeof(p), "%s/%s", g_cur, g_ents[g_bsel].name);
+                    stop_play();
+                    if (wav_load(p, &g_au) == 0) {
+                        snprintf(g_edit_path, sizeof(g_edit_path), "%s", p);
+                        g_in = 0; g_out = g_au.frames; g_curpos = 0; g_modified = 0;
+                        g_wave_dirty = 1; emenu_sel = 0; emenu_scroll = 0; mode = M_EDIT;
+                    } else mode = M_BROWSE;
+                }
                 else if (!strcmp(op, "RENAME")) {
                     snprintf(name, sizeof(name), "%s", g_ents[g_bsel].name);
                     if (!g_ents[g_bsel].is_dir) { char *d = strrchr(name, '.'); if (d && !strcasecmp(d, ".wav")) *d = '\0'; }
@@ -521,6 +558,50 @@ int main(int argc, char *argv[]) {
                 g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE;
             }
             redraw = 1;
+        } else if (mode == M_EDIT) {
+            long step = g_au.frames / 1000; if (step < 1) step = 1;
+            long fast = g_au.frames / 20; if (fast < 1) fast = 1;
+            if (NAV(BTN_LEFT))  g_curpos -= step;
+            if (NAV(BTN_RIGHT)) g_curpos += step;
+            if (NAV(BTN_L1))    g_curpos -= fast;
+            if (NAV(BTN_R1))    g_curpos += fast;
+            if (g_curpos < 0) g_curpos = 0;
+            if (g_curpos > g_au.frames) g_curpos = g_au.frames;
+            if (PAD_justPressed(BTN_Y)) { g_in = g_curpos; if (g_in >= g_out) g_in = g_out > 0 ? g_out - 1 : 0; }
+            if (PAD_justPressed(BTN_X)) { g_out = g_curpos; if (g_out <= g_in) g_out = g_in + 1; if (g_out > g_au.frames) g_out = g_au.frames; }
+            if (PAD_justPressed(BTN_A)) {
+                if (g_play_pid > 0) stop_play();
+                else if (wav_save_range(g_tmpplay, &g_au, g_in, g_out) == 0) start_play_path(g_tmpplay, -2);
+            }
+            if (PAD_justPressed(BTN_START)) { emenu_sel = 0; emenu_scroll = 0; mode = M_EMENU; }
+            if (PAD_justPressed(BTN_B)) { stop_play(); audio_free(&g_au); mode = M_BROWSE; }
+            redraw = 1;
+        } else if (mode == M_EMENU) {
+            int mvis = ui_menu_visible_rows(screen);
+            if (NAV(BTN_UP))   { if (emenu_sel > 0) emenu_sel--; }
+            if (NAV(BTN_DOWN)) { if (emenu_sel < EMENU_N - 1) emenu_sel++; }
+            if (emenu_sel < emenu_scroll) emenu_scroll = emenu_sel;
+            if (emenu_sel >= emenu_scroll + mvis) emenu_scroll = emenu_sel - mvis + 1;
+            if (PAD_justPressed(BTN_B)) mode = M_EDIT;
+            if (PAD_justPressed(BTN_A)) {
+                const char *op = EMENU[emenu_sel];
+                int back = 1;
+                if (!strcmp(op, "NORMALIZE")) au_normalize(&g_au);
+                else if (!strcmp(op, "FADE IN")) au_fade_in(&g_au, g_in, g_out);
+                else if (!strcmp(op, "FADE OUT")) au_fade_out(&g_au, g_in, g_out);
+                else if (!strcmp(op, "REVERSE")) au_reverse(&g_au, g_in, g_out);
+                else if (!strcmp(op, "TRIM TO SELECTION")) { au_crop(&g_au, g_in, g_out); g_in = 0; g_out = g_au.frames; g_curpos = 0; }
+                else if (!strcmp(op, "TRIM SILENCE")) { long s, e; au_silence_bounds(&g_au, 0.01f, &s, &e); au_crop(&g_au, s, e); g_in = 0; g_out = g_au.frames; g_curpos = 0; }
+                else if (!strcmp(op, "TO MONO")) au_to_mono(&g_au);
+                else if (!strcmp(op, "16-BIT")) g_au.bits = 16;
+                else if (!strcmp(op, "HALF RATE")) { au_halve_rate(&g_au); g_in = 0; g_out = g_au.frames; g_curpos = 0; }
+                else if (!strcmp(op, "SAVE")) { remount("async"); wav_save(g_edit_path, &g_au); remount("sync"); g_modified = 0; list_dir(); back = 0; }
+                else if (!strcmp(op, "SAVE AS")) { name[0] = '\0'; name_purpose = NP_SAVEAS; caps = 0; krow = 1; kcol = 0; mode = M_NAME; back = -1; }
+                else if (!strcmp(op, "EXIT")) { stop_play(); audio_free(&g_au); mode = M_BROWSE; back = -1; }
+                if (back == 1) { g_modified = 1; g_wave_dirty = 1; mode = M_EDIT; }
+                else if (back == 0) { g_wave_dirty = 1; mode = M_EDIT; }
+            }
+            redraw = 1;
         } else { // M_HOME
             if (PAD_justPressed(BTN_A) && in.present) { if (start_rec(&rec, &in)) mode = M_REC; }
             if (PAD_justPressed(BTN_X)) { snprintf(g_cur, sizeof(g_cur), "%s", g_lib); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; redraw = 1; }
@@ -558,9 +639,26 @@ int main(int argc, char *argv[]) {
                                     "A OPEN/PLAY  Y ACTIONS  X NEW FOLDER  B BACK");
                 }
             } else if (mode == M_MENU) {
-                ui_draw_menu(&ui, screen, "ACTIONS", menu_opts, menu_n, menu_sel);
+                ui_draw_menu(&ui, screen, "ACTIONS", menu_opts, menu_n, menu_sel, menu_scroll);
             } else if (mode == M_CONFIRM) {
                 ui_draw_confirm(&ui, screen, "DELETE", g_nent ? g_ents[g_bsel].name : "");
+            } else if (mode == M_EDIT) {
+                int cols = ui_editor_cols(screen); if (cols > 2048) cols = 2048;
+                if (g_wave_dirty || cols != g_wave_cols) {
+                    au_peaks(&g_au, 0, g_au.frames, cols, g_mn, g_mx);
+                    g_wave_cols = cols; g_wave_dirty = 0;
+                }
+                char info[96];
+                long secs = g_au.rate ? g_au.frames / g_au.rate : 0;
+                snprintf(info, sizeof(info), "%ld:%02ld  %dHZ  %dCH  %dBIT%s",
+                         secs / 60, secs % 60, g_au.rate, g_au.ch, g_au.bits, g_modified ? "  *" : "");
+                double inf = g_au.frames ? (double)g_in / g_au.frames : 0;
+                double outf = g_au.frames ? (double)g_out / g_au.frames : 1;
+                double curf = g_au.frames ? (double)g_curpos / g_au.frames : 0;
+                const char *nm = strrchr(g_edit_path, '/'); nm = nm ? nm + 1 : g_edit_path;
+                ui_draw_editor(&ui, screen, nm, info, g_mn, g_mx, cols, inf, outf, curf, g_play_pid > 0);
+            } else if (mode == M_EMENU) {
+                ui_draw_menu(&ui, screen, "EDIT", EMENU, EMENU_N, emenu_sel, emenu_scroll);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }
