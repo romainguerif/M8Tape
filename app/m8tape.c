@@ -16,6 +16,8 @@
 #include <math.h>
 #include <signal.h>
 #include <dirent.h>
+#include <alsa/asoundlib.h>   // used ONLY inside the forked preview child
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -442,6 +444,106 @@ static int g_wave_cols, g_wave_dirty;
 static long g_view_span;               // visible frames (zoom)
 static long g_pk_vs = -1, g_pk_span = -1; // peak cache key (view start/span)
 
+// --- real-time H3000 preview as a CHILD PROCESS -----------------------------
+// CRITICAL: ALSA is only ever opened in the forked child (the main SDL process
+// opening ALSA wedges the whole audio codec). Live params + mono source live in
+// an mmap'd shared region so the UI can tweak parameters in real time.
+typedef struct {
+    volatile int stop;
+    MicroPitchParams params;   // updated live by the UI
+    int frames;
+    int rate;
+    // mono source floats follow immediately after this struct in the mapping
+} PvShared;
+
+static int   g_pv_active = 0;
+static pid_t g_pv_pid = 0;
+static PvShared *g_pv_shm = NULL;
+static size_t g_pv_size = 0;
+
+// runs in the child: opens ALSA, loops the source through MicroPitch, reading
+// live params from shared memory. Never returns (calls _exit).
+static void pv_child(PvShared *shm) {
+    float *src = (float *)((char *)shm + sizeof(PvShared));
+    snd_pcm_t *pcm = NULL;
+    int ok = 0;
+    for (int t = 0; t < 10 && !ok; t++) {
+        if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) == 0 &&
+            snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                               2, shm->rate, 1, 80000) == 0) ok = 1;
+        else { if (pcm) { snd_pcm_close(pcm); pcm = NULL; } usleep(50000); }
+    }
+    if (!ok) _exit(1);
+    MicroPitchState *st = mp_create(shm->rate);
+    if (!st) { snd_pcm_close(pcm); _exit(1); }
+    enum { BLK = 512 };
+    float dry[BLK], out[BLK * 2];
+    short s16[BLK * 2];
+    long pos = 0;
+    while (!shm->stop) {
+        if (getppid() == 1) break;                 // parent gone → don't orphan
+        for (int i = 0; i < BLK; i++) { dry[i] = src[pos]; if (++pos >= shm->frames) pos = 0; }
+        MicroPitchParams p = shm->params;          // live snapshot
+        mp_block(st, dry, BLK, &p, out);
+        for (int i = 0; i < BLK * 2; i++) {
+            float v = out[i]; if (v > 1) v = 1; if (v < -1) v = -1;
+            s16[i] = (short)(v * 32767);
+        }
+        snd_pcm_sframes_t w = snd_pcm_writei(pcm, s16, BLK);
+        if (w < 0) snd_pcm_recover(pcm, (int)w, 1);
+    }
+    mp_destroy(st);
+    snd_pcm_drain(pcm);
+    snd_pcm_close(pcm);
+    _exit(0);
+}
+
+static void preview_stop(void) {
+    if (!g_pv_active) return;
+    if (g_pv_shm) g_pv_shm->stop = 1;             // ask child to finish gracefully
+    int st, i = 0;
+    while (g_pv_pid > 0 && waitpid(g_pv_pid, &st, WNOHANG) == 0 && i < 40) { usleep(10000); i++; }
+    if (i >= 40 && g_pv_pid > 0) { kill(g_pv_pid, SIGKILL); waitpid(g_pv_pid, &st, 0); }
+    if (g_pv_shm) munmap(g_pv_shm, g_pv_size);
+    g_pv_shm = NULL; g_pv_pid = 0; g_pv_active = 0;
+}
+// reap the preview child if it exited on its own (e.g. ALSA open failed) so the
+// PREVIEW indicator reflects reality.
+static void reap_preview(void) {
+    if (g_pv_active && g_pv_pid > 0) {
+        int st;
+        if (waitpid(g_pv_pid, &st, WNOHANG) == g_pv_pid) {
+            if (g_pv_shm) munmap(g_pv_shm, g_pv_size);
+            g_pv_shm = NULL; g_pv_pid = 0; g_pv_active = 0;
+        }
+    }
+}
+static void preview_start(const Audio *a, const MicroPitchParams *p0) {
+    if (g_pv_active || !a->data || a->frames < 1) return;
+    stop_play();                                   // free the device for the child
+    long F = a->frames;
+    size_t sz = sizeof(PvShared) + (size_t)F * sizeof(float);
+    PvShared *shm = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (shm == MAP_FAILED) return;
+    shm->stop = 0; shm->frames = (int)F;
+    shm->rate = a->rate > 0 ? a->rate : 48000;
+    shm->params = *p0;
+    float *src = (float *)((char *)shm + sizeof(PvShared));
+    for (long i = 0; i < F; i++) {
+        float s = 0;
+        for (int c = 0; c < a->ch; c++) s += a->data[i * a->ch + c];
+        src[i] = s / a->ch;
+    }
+    pid_t pid = fork();
+    if (pid < 0) { munmap(shm, sz); return; }
+    if (pid == 0) {
+        freopen("/dev/null", "w", stdout);
+        pv_child(shm);   // never returns
+        _exit(0);
+    }
+    g_pv_pid = pid; g_pv_shm = shm; g_pv_size = sz; g_pv_active = 1;
+}
+
 // --- app --------------------------------------------------------------------
 enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS, M_H3000 };
 enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
@@ -504,6 +606,7 @@ int main(int argc, char *argv[]) {
         PWR_update(&redraw, NULL, NULL, NULL);
         PAD_poll();
         reap_play();
+        reap_preview();
 
         if (mode == M_REC) {
             int stop_now = PAD_justPressed(BTN_A);
@@ -735,21 +838,13 @@ int main(int argc, char *argv[]) {
                     case 5: mp.mix += dl * 0.05f; if (mp.mix < 0) mp.mix = 0; if (mp.mix > 1) mp.mix = 1; break;
                 }
             }
-            if (PAD_justPressed(BTN_A)) {                 // A/B preview (render a copy + play)
-                if (g_play_pid > 0) stop_play();
-                else {
-                    Audio c = g_au;
-                    c.data = malloc((size_t)g_au.frames * g_au.ch * sizeof(float));
-                    if (c.data) {
-                        memcpy(c.data, g_au.data, (size_t)g_au.frames * g_au.ch * sizeof(float));
-                        if (h3000_micropitch(&c, &mp) == 0 && wav_save(g_tmpplay, &c) == 0)
-                            start_play_path(g_tmpplay, -2);
-                        audio_free(&c);
-                    }
-                }
+            if (g_pv_active && g_pv_shm) g_pv_shm->params = mp;   // live: tweak heard now
+            if (PAD_justPressed(BTN_A)) {                 // toggle real-time looped preview
+                if (g_pv_active) preview_stop();
+                else preview_start(&g_au, &mp);
             }
             if (PAD_justPressed(BTN_START)) {             // RENDER (destructive)
-                stop_play();
+                preview_stop();
                 if (h3000_micropitch(&g_au, &mp) == 0) {
                     g_modified = 1; g_wave_dirty = 1;
                     g_view_span = g_au.frames;
@@ -757,7 +852,7 @@ int main(int argc, char *argv[]) {
                 }
                 mode = M_EDIT;
             }
-            if (PAD_justPressed(BTN_B)) { stop_play(); mode = M_EDIT; }
+            if (PAD_justPressed(BTN_B)) { preview_stop(); mode = M_EDIT; }
             redraw = 1;
         } else if (mode == M_SETTINGS) {
             if (NAV(BTN_UP))   { if (set_sel > 0) set_sel--; }
@@ -862,7 +957,7 @@ int main(int argc, char *argv[]) {
                 snprintf(a5, sizeof(a5), "%d%%", (int)(mp.mix * 100));
                 const char *hl[6] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX"};
                 const char *hv[6] = {a0, a1, a2, a3, a4, a5};
-                ui_draw_fx(&ui, screen, "MICROPITCH", hl, hv, 6, h_sel, g_play_pid > 0);
+                ui_draw_fx(&ui, screen, "MICROPITCH", hl, hv, 6, h_sel, g_pv_active);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }
@@ -874,6 +969,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    preview_stop();
     stop_play();
     if (rec.active) stop_rec(&rec);
     ui_free(&ui);
