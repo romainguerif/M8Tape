@@ -1,39 +1,41 @@
-// M8Tape - sampling utility for the TrimUI Brick (NextUI / tg5040).
-// Milestone 1: boots with a Nothing-OS-style screen and auto-detects the
-// connected USB audio capture source (channel count / rate / format) by
-// reading /proc/asound. No audio is captured yet — this proves the toolchain,
-// the rendering, and the detection on real hardware.
+// M8Tape Studio - sampling utility for the TrimUI Brick (NextUI / tg5040).
+//
+// M1: boot + auto-detect USB capture source from /proc/asound.
+// M2: record the detected source via arecord (USB tuning, async card remount,
+//     large buffers), with a REC screen.
+// UI: TE x Nothing visual system in ui.c (custom fonts, tape reels, DSEG7
+//     timecode). MinUI provides the screen surface + input.
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
+#include <math.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/resource.h>
 
 #include <msettings.h>
-#include <SDL2/SDL_ttf.h>
 
 #include "defines.h"
 #include "api.h"
 #include "utils.h"
-
-// --- Nothing OS palette (brand-faithful working values) ---------------------
-static const SDL_Color NT_WHITE = {255, 255, 255, 255};
-static const SDL_Color NT_GREY  = {130, 130, 130, 255};
-static const SDL_Color NT_DIM   = {58, 58, 58, 255};
-static const SDL_Color NT_RED   = {215, 25, 33, 255}; // #D71921, single accent
+#include "ui.h"
 
 // --- detected input ---------------------------------------------------------
 struct Input {
-    int   present;        // 1 if a USB capture device was found
-    char  id[64];         // ALSA card id (e.g. "M8")
-    char  name[128];      // human name (first line of stream0)
-    int   channels;       // max capture channels
-    int   rate;           // a supported rate (Hz)
-    char  format[32];     // e.g. "S24_3LE"
-    int   card;           // ALSA card number
+    int   present;
+    char  id[64];
+    char  name[128];
+    int   channels;
+    int   rate;
+    char  format[32];
+    int   card;
 };
 
-// read_file slurps up to cap-1 bytes of path into buf (NUL-terminated).
 static int read_file(const char *path, char *buf, int cap) {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
@@ -44,8 +46,6 @@ static int read_file(const char *path, char *buf, int cap) {
     return n;
 }
 
-// after_label returns a pointer just past the first occurrence of label in s,
-// or NULL. Used to read "Channels: 24", "Rates: 44100", "Format: S24_3LE".
 static const char *after_label(const char *s, const char *label) {
     const char *p = strstr(s, label);
     if (!p) return NULL;
@@ -54,29 +54,21 @@ static const char *after_label(const char *s, const char *label) {
     return p;
 }
 
-// detect_input scans /proc/asound/cardN/stream0 for a capture-capable device
-// (these files are created by snd-usb-audio, so they identify USB audio cards).
-// It parses the Capture section for channels/rate/format. Returns 1 on success.
 static int detect_input(struct Input *in) {
     memset(in, 0, sizeof(*in));
-    char path[64];
-    char buf[8192];
-
+    char path[64], buf[8192];
     for (int card = 0; card < 16; card++) {
         snprintf(path, sizeof(path), "/proc/asound/card%d/stream0", card);
         if (read_file(path, buf, sizeof(buf)) <= 0) continue;
-
         const char *cap = strstr(buf, "Capture:");
-        if (!cap) continue; // playback-only device, skip
+        if (!cap) continue;
 
-        // name = first non-empty line of stream0
         const char *nl = strchr(buf, '\n');
         int nlen = nl ? (int)(nl - buf) : (int)strlen(buf);
         if (nlen > (int)sizeof(in->name) - 1) nlen = sizeof(in->name) - 1;
         memcpy(in->name, buf, nlen);
         in->name[nlen] = '\0';
 
-        // id from /proc/asound/cardN/id
         char idpath[64], idbuf[64];
         snprintf(idpath, sizeof(idpath), "/proc/asound/card%d/id", card);
         if (read_file(idpath, idbuf, sizeof(idbuf)) > 0) {
@@ -84,7 +76,6 @@ static int detect_input(struct Input *in) {
             snprintf(in->id, sizeof(in->id), "%s", idbuf);
         }
 
-        // parse the largest Channels value within the Capture section
         const char *p = cap;
         int max_ch = 0;
         while ((p = after_label(p, "Channels:")) != NULL) {
@@ -92,21 +83,17 @@ static int detect_input(struct Input *in) {
             if (c > max_ch) max_ch = c;
         }
         in->channels = max_ch;
-
         const char *r = after_label(cap, "Rates:");
         if (r) in->rate = atoi(r);
-
         const char *fmt = after_label(cap, "Format:");
         if (fmt) {
             int i = 0;
             while (fmt[i] && fmt[i] != '\r' && fmt[i] != '\n' &&
                    fmt[i] != ' ' && i < (int)sizeof(in->format) - 1) {
-                in->format[i] = fmt[i];
-                i++;
+                in->format[i] = fmt[i]; i++;
             }
             in->format[i] = '\0';
         }
-
         in->card = card;
         in->present = 1;
         return 1;
@@ -114,7 +101,6 @@ static int detect_input(struct Input *in) {
     return 0;
 }
 
-// classify maps a channel count to a friendly source label.
 static const char *classify(const struct Input *in) {
     if (!in->present) return "NO INPUT";
     if (in->channels >= 24) return "DIRTYWAVE M8";
@@ -123,131 +109,197 @@ static const char *classify(const struct Input *in) {
     return "USB AUDIO";
 }
 
-// --- drawing helpers --------------------------------------------------------
-static void fill(SDL_Surface *s, int x, int y, int w, int h, SDL_Color c) {
-    SDL_Rect r = {x, y, w, h};
-    SDL_FillRect(s, &r, SDL_MapRGB(s->format, c.r, c.g, c.b));
+static void write_detect_log(const char *dir, const struct Input *in) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/detect.txt", dir);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "present=%d\ncard=%d\nid=%s\nname=%s\nchannels=%d\nrate=%d\nformat=%s\nclass=%s\n",
+            in->present, in->card, in->id, in->name,
+            in->channels, in->rate, in->format, classify(in));
+    fclose(f);
 }
 
-// text draws a single line at (x,y); returns its pixel width.
-static int text(SDL_Surface *s, TTF_Font *f, const char *str, SDL_Color c, int x, int y) {
-    if (!str || !*str) return 0;
-    SDL_Surface *t = TTF_RenderUTF8_Blended(f, str, c);
-    if (!t) return 0;
-    SDL_Rect r = {x, y, t->w, t->h};
-    SDL_BlitSurface(t, NULL, s, &r);
-    int w = t->w;
-    SDL_FreeSurface(t);
-    return w;
+// --- audio plumbing (M8Tape's proven path) ----------------------------------
+static void write_sysfs(const char *path, const char *val) {
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fputs(val, f);
+    fclose(f);
 }
 
-// text_r draws a single line right-aligned to right_x.
-static void text_r(SDL_Surface *s, TTF_Font *f, const char *str, SDL_Color c, int right_x, int y) {
-    if (!str || !*str) return;
-    SDL_Surface *t = TTF_RenderUTF8_Blended(f, str, c);
-    if (!t) return;
-    SDL_Rect r = {right_x - t->w, y, t->w, t->h};
-    SDL_BlitSurface(t, NULL, s, &r);
-    SDL_FreeSurface(t);
-}
-
-struct AppState { int redraw; int quitting; int exit_code; };
-
-static void handle_input(struct AppState *st) {
-    PAD_poll();
-    if (PAD_justReleased(BTN_A) || PAD_justReleased(BTN_B) || PAD_justReleased(BTN_MENU)) {
-        st->quitting = 1;
-        st->redraw = 0;
+static void sdcard_mount(char *out, int cap) {
+    snprintf(out, cap, "/mnt/SDCARD");
+    FILE *f = fopen("/proc/mounts", "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, "SDCARD")) {
+            char dev[256], mp[256];
+            if (sscanf(line, "%255s %255s", dev, mp) == 2) {
+                snprintf(out, cap, "%s", mp);
+                break;
+            }
+        }
     }
+    fclose(f);
 }
 
-static void draw_screen(SDL_Surface *screen, const struct Input *in) {
-    const int W = screen->w, H = screen->h;
-    const int M = W / 16; // margin, scales with screen
-
-    // background: pure black
-    fill(screen, 0, 0, W, H, (SDL_Color){0, 0, 0, 255});
-
-    // header
-    text(screen, font.large, "M8TAPE", NT_WHITE, M, M);
-    text(screen, font.small, "SAMPLER", NT_GREY, M, M + 64);
-
-    // divider
-    fill(screen, M, M + 104, W - 2 * M, 2, NT_DIM);
-
-    // INPUT block
-    int y = H / 3;
-    text(screen, font.small, "INPUT", NT_GREY, M, y);
-
-    // source name (big) + red accent dot when a device is present
-    int nx = text(screen, font.large, classify(in), NT_WHITE, M, y + 36);
-    if (in->present) {
-        int dot = 18;
-        fill(screen, M + nx + 22, y + 36 + 20, dot, dot, NT_RED);
-    }
-
-    // technical line
-    char line[160];
-    if (in->present) {
-        snprintf(line, sizeof(line), "%d CH   %d HZ   %s",
-                 in->channels, in->rate, in->format[0] ? in->format : "?");
-        text(screen, font.medium, line, NT_GREY, M, y + 116);
-
-        snprintf(line, sizeof(line), "ALSA: %s  (hw:%d,0)",
-                 in->id[0] ? in->id : "?", in->card);
-        text(screen, font.small, line, NT_DIM, M, y + 160);
-    } else {
-        text(screen, font.medium, "CONNECT A USB AUDIO DEVICE", NT_GREY, M, y + 116);
-    }
-
-    // footer hint
-    text_r(screen, font.small, "B / MENU  —  QUIT", NT_GREY, W - M, H - M);
+static void apply_usb_tuning(void) {
+    write_sysfs("/sys/module/snd_usb_audio/parameters/nrpacks", "1");
+    write_sysfs("/sys/module/usbcore/parameters/autosuspend", "-1");
 }
 
+static void remount(const char *opt) {
+    char mp[256], cmd[512];
+    sdcard_mount(mp, sizeof(mp));
+    if (strcmp(opt, "sync") == 0)
+        snprintf(cmd, sizeof(cmd), "sync; mount -o remount,rw,sync '%s' 2>/dev/null", mp);
+    else
+        snprintf(cmd, sizeof(cmd), "mount -o remount,rw,async '%s' 2>/dev/null", mp);
+    int rc = system(cmd); (void)rc;
+}
+
+// --- recording --------------------------------------------------------------
+struct Rec { int active; pid_t pid; time_t start; char path[512]; };
+static const char *g_out_dir = ".";
+
+static int start_rec(struct Rec *r, const struct Input *in) {
+    if (!in->present) return 0;
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s/recordings", g_out_dir);
+    mkdir(dir, 0777);
+
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char ts[32];
+    strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", tm);
+    snprintf(r->path, sizeof(r->path), "%s/rec_%s.wav", dir, ts);
+
+    char dev[32], cstr[8], rstr[16];
+    snprintf(dev, sizeof(dev), "hw:%d,0", in->card);
+    snprintf(cstr, sizeof(cstr), "%d", in->channels > 0 ? in->channels : 2);
+    snprintf(rstr, sizeof(rstr), "%d", in->rate > 0 ? in->rate : 48000);
+    const char *fmt = in->format[0] ? in->format : "S24_3LE";
+
+    apply_usb_tuning();
+    remount("async");
+
+    pid_t pid = fork();
+    if (pid < 0) return 0;
+    if (pid == 0) {
+        setpriority(PRIO_PROCESS, 0, -19);
+        char logp[600];
+        snprintf(logp, sizeof(logp), "%s/recordings/arecord.log", g_out_dir);
+        freopen(logp, "w", stderr);
+        freopen("/dev/null", "w", stdout);
+        execlp("arecord", "arecord", "-D", dev, "-c", cstr, "-f", fmt, "-r", rstr,
+               "--buffer-time=2000000", "--period-time=500000",
+               "-t", "wav", r->path, (char *)NULL);
+        _exit(127);
+    }
+    r->active = 1; r->pid = pid; r->start = time(NULL);
+    return 1;
+}
+
+static void stop_rec(struct Rec *r) {
+    if (!r->active) return;
+    if (r->pid > 0) {
+        kill(r->pid, SIGTERM);
+        int status, i = 0;
+        while (waitpid(r->pid, &status, WNOHANG) == 0 && i < 100) { usleep(50000); i++; }
+        if (i >= 100) { kill(r->pid, SIGKILL); waitpid(r->pid, &status, 0); }
+    }
+    remount("sync");
+    r->active = 0; r->pid = 0;
+}
+
+static const char *basename_of(const char *p) {
+    const char *b = strrchr(p, '/');
+    return b ? b + 1 : p;
+}
+
+// --- app --------------------------------------------------------------------
 int main(int argc, char *argv[]) {
-    PWR_setCPUSpeed(CPU_SPEED_MENU);
+    g_out_dir = (argc > 1) ? argv[1] : ".";
 
+    PWR_setCPUSpeed(CPU_SPEED_MENU);
     SDL_Surface *screen = GFX_init(MODE_MAIN);
     PAD_init();
     PWR_init();
     InitSettings();
 
+    UI ui;
+    char res_dir[600];
+    snprintf(res_dir, sizeof(res_dir), "%s/res", g_out_dir);
+    int fonts_ok = (ui_load_fonts(&ui, res_dir) == 0);
+
     struct Input in;
     detect_input(&in);
+    write_detect_log(g_out_dir, &in);
 
-    struct AppState st = {.redraw = 1, .quitting = 0, .exit_code = EXIT_SUCCESS};
-    int frames = 0;
+    struct Rec rec = {0};
+    int quitting = 0, redraw = 1, frames = 0, shot_done = 0;
+    char last_take[512] = {0};
 
-    while (!st.quitting) {
+    while (!quitting) {
         GFX_startFrame();
-        PWR_update(&st.redraw, NULL, NULL, NULL);
-        handle_input(&st);
+        PWR_update(&redraw, NULL, NULL, NULL);
+        PAD_poll();
 
-        // re-scan for a device about once per second so hot-plug is reflected
-        if (++frames >= 60) {
-            frames = 0;
-            struct Input now;
-            detect_input(&now);
-            if (now.present != in.present || now.channels != in.channels ||
-                now.card != in.card) {
-                in = now;
-                st.redraw = 1;
+        if (rec.active) {
+            if (PAD_justReleased(BTN_A)) {
+                stop_rec(&rec);
+                snprintf(last_take, sizeof(last_take), "%s", basename_of(rec.path));
+            }
+            redraw = 1; // animate
+        } else {
+            if (PAD_justReleased(BTN_A) && in.present) start_rec(&rec, &in);
+            if (PAD_justReleased(BTN_B) || PAD_justReleased(BTN_MENU)) quitting = 1;
+            if (++frames >= 60) {
+                frames = 0;
+                struct Input now;
+                detect_input(&now);
+                if (now.present != in.present || now.channels != in.channels ||
+                    now.card != in.card) {
+                    in = now; write_detect_log(g_out_dir, &in); redraw = 1;
+                }
             }
         }
 
-        if (st.redraw) {
-            GFX_clear(screen);
-            draw_screen(screen, &in);
+        if (redraw && fonts_ok) {
+            UIInput ui_in = {in.present, classify(&in), in.channels, in.rate,
+                             in.format[0] ? in.format : NULL};
+            if (rec.active) {
+                UIRec ui_r = {
+                    .elapsed = (long)(time(NULL) - rec.start),
+                    .take = last_take[0] ? last_take : basename_of(rec.path),
+                    .angle = (double)(SDL_GetTicks() % 1200) / 1200.0 * 2.0 * M_PI,
+                    .blink = ((time(NULL) % 2) == 0),
+                    .levelL = -1, .levelR = -1,
+                };
+                ui_draw_record(&ui, screen, &ui_in, &ui_r);
+            } else {
+                ui_draw_home(&ui, screen, &ui_in);
+            }
             GFX_flip(screen);
-            st.redraw = 0;
-        } else {
+            if (!shot_done) {  // one-shot screenshot for remote design checks
+                char shot[640];
+                snprintf(shot, sizeof(shot), "%s/screen.bmp", g_out_dir);
+                SDL_SaveBMP(screen, shot);
+                shot_done = 1;
+            }
+            if (!rec.active) redraw = 0;
+        } else if (!redraw) {
             GFX_sync();
         }
     }
 
+    if (rec.active) stop_rec(&rec);
+    ui_free(&ui);
     QuitSettings();
     PWR_quit();
     PAD_quit();
     GFX_quit();
-    return st.exit_code;
+    return 0;
 }

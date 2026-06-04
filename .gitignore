@@ -25,10 +25,22 @@ app/platform/
 app/m8tape-tg5040
 toolchain/
 
-# Pak compilé (binaire + libs bundlées) : non commité, packagé localement
+# Pak compilé (binaire + libs/polices bundlées) : non commité, packagé localement
 M8Tape Studio.pak/m8tape-tg5040
 M8Tape Studio.pak/lib/
+M8Tape Studio.pak/res/
 M8Tape Studio.pak/m8tape.log
+M8Tape Studio.pak/diag.txt
+M8Tape Studio.pak/detect.txt
+M8Tape Studio.pak/screen.bmp
+
+# Aperçus de design (générés par le harnais preview)
+app/preview
+app/out_*.bmp
+app/out_*.png
 
 # Recherche : digest suivi, images tierces ignorées
 research/m8-screenshots/
+
+# Images de recherche tierces
+research/te-inspiration/
