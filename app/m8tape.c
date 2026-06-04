@@ -452,15 +452,14 @@ static float *g_pv_dry = NULL;     // mono source, looped
 static long g_pv_frames = 0;
 static int g_pv_rate = 48000;
 static MicroPitchParams g_pv_params; // live, updated by the UI thread
+static snd_pcm_t *g_pv_pcm = NULL;    // opened by preview_start (main thread)
 
+// the audio thread just streams; the PCM is already open (so the UI knows for
+// sure whether preview actually started).
 static void *pv_func(void *arg) {
     (void)arg;
-    snd_pcm_t *pcm;
-    if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) return NULL;
-    if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                           2, g_pv_rate, 1, 80000) < 0) { snd_pcm_close(pcm); return NULL; }
     MicroPitchState *st = mp_create(g_pv_rate);
-    if (!st) { snd_pcm_close(pcm); return NULL; }
+    if (!st) return NULL;
     enum { BLK = 512 };
     float dry[BLK], out[BLK * 2];
     short s16[BLK * 2];
@@ -472,23 +471,41 @@ static void *pv_func(void *arg) {
             float v = out[i]; if (v > 1) v = 1; if (v < -1) v = -1;
             s16[i] = (short)(v * 32767);
         }
-        snd_pcm_sframes_t w = snd_pcm_writei(pcm, s16, BLK);
-        if (w < 0) snd_pcm_recover(pcm, (int)w, 1);
+        snd_pcm_sframes_t w = snd_pcm_writei(g_pv_pcm, s16, BLK);
+        if (w < 0) snd_pcm_recover(g_pv_pcm, (int)w, 1);
     }
     mp_destroy(st);
-    snd_pcm_drain(pcm);
-    snd_pcm_close(pcm);
     return NULL;
 }
 static void preview_stop(void) {
     if (!g_pv_active) return;
     g_pv_run = 0;
     pthread_join(g_pv_thread, NULL);
+    if (g_pv_pcm) { snd_pcm_drain(g_pv_pcm); snd_pcm_close(g_pv_pcm); g_pv_pcm = NULL; }
     free(g_pv_dry); g_pv_dry = NULL;
     g_pv_active = 0;
 }
+// open "default" for playback, retrying a few times if the device is briefly
+// busy (a just-stopped playback may not have released it yet). 0 = ok.
+static int pv_open_alsa(int rate) {
+    for (int t = 0; t < 12; t++) {
+        snd_pcm_t *pcm = NULL;
+        int err = snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0);
+        if (err == 0) {
+            err = snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                                     2, rate, 1, 80000);
+            if (err == 0) { g_pv_pcm = pcm; return 0; }
+            snd_pcm_close(pcm);
+        }
+        fprintf(stderr, "preview: ALSA open try %d failed: %s\n", t, snd_strerror(err));
+        usleep(60 * 1000);
+    }
+    return -1;
+}
 static void preview_start(const Audio *a, const MicroPitchParams *p0) {
     if (g_pv_active || !a->data || a->frames < 1) return;
+    stop_play();                        // release any fade-player child first
+
     long F = a->frames;
     g_pv_dry = malloc((size_t)F * sizeof(float));
     if (!g_pv_dry) return;
@@ -500,9 +517,16 @@ static void preview_start(const Audio *a, const MicroPitchParams *p0) {
     g_pv_frames = F;
     g_pv_rate = a->rate > 0 ? a->rate : 48000;
     g_pv_params = *p0;
+
+    if (pv_open_alsa(g_pv_rate) != 0) {  // device stayed busy → don't fake it
+        fprintf(stderr, "preview: could not open ALSA, aborting preview\n");
+        free(g_pv_dry); g_pv_dry = NULL; return;
+    }
     g_pv_run = 1; g_pv_active = 1;
     if (pthread_create(&g_pv_thread, NULL, pv_func, NULL) != 0) {
-        g_pv_run = 0; g_pv_active = 0; free(g_pv_dry); g_pv_dry = NULL;
+        g_pv_run = 0; g_pv_active = 0;
+        snd_pcm_close(g_pv_pcm); g_pv_pcm = NULL;
+        free(g_pv_dry); g_pv_dry = NULL;
     }
 }
 
