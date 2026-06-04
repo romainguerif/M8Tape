@@ -205,6 +205,74 @@ void ui_draw_home(UI *ui, SDL_Surface *s, const UIInput *in) {
                 C_GREY, s->w - MARGIN, s->h - 64);
 }
 
+// --- on-screen keyboard -----------------------------------------------------
+const char *kb_rows[KB_CHAR_ROWS] = {
+    "1234567890",
+    "QWERTYUIOP",
+    "ASDFGHJKL_",
+    "ZXCVBNM-.,",
+};
+const char *kb_actions[KB_ACTIONS] = {"CAPS", "DEL", "OK"};
+
+static void cell(SDL_Surface *s, TTF_Font *f, const char *txt, int cx, int cy,
+                 int w, int h, int selected, int accent) {
+    if (selected) {
+        fillc(s, cx - w / 2, cy - h / 2, w, h, accent ? C_RED : C_WHITE);
+    } else {
+        // thin outline cell
+        fillc(s, cx - w / 2, cy - h / 2, w, 1, C_HAIR);
+        fillc(s, cx - w / 2, cy + h / 2, w, 1, C_HAIR);
+        fillc(s, cx - w / 2, cy - h / 2, 1, h, C_HAIR);
+        fillc(s, cx + w / 2, cy - h / 2, 1, h, C_HAIR);
+    }
+    SDL_Color tc = selected ? C_BG : C_WHITE;
+    draw_text_c(s, f, txt, tc, cx, cy - 20);
+}
+
+void ui_draw_keyboard(UI *ui, SDL_Surface *s, const char *title,
+                      const char *text, int caps, int row, int col) {
+    fillc(s, 0, 0, s->w, s->h, C_BG);
+
+    // title
+    draw_label(s, ui->label, title ? title : "NAME", C_GREY, MARGIN, 40, 3);
+    fillc(s, MARGIN, 92, s->w - 2 * MARGIN, 2, C_HAIR);
+
+    // text field with blinking-less cursor block
+    int tx = draw_text(s, ui->h1, (text && *text) ? text : "", C_WHITE, MARGIN, 128);
+    fillc(s, MARGIN + tx + 6, 138, 22, 44, C_RED); // cursor
+
+    // char grid
+    int gridW = s->w - 2 * MARGIN;
+    int cw = gridW / KB_COLS;
+    int ch = 70;
+    int top = 280;
+    for (int r = 0; r < KB_CHAR_ROWS; r++) {
+        for (int c = 0; c < KB_COLS; c++) {
+            char k = kb_rows[r][c];
+            char buf[2] = { caps ? k : (char)tolower((unsigned char)k), 0 };
+            int cx = MARGIN + c * cw + cw / 2;
+            int cy = top + r * (ch + 8) + ch / 2;
+            cell(s, ui->mono, buf, cx, cy, cw - 8, ch, (row == r && col == c), 1);
+        }
+    }
+
+    // action row
+    int ay = top + KB_CHAR_ROWS * (ch + 8) + 20;
+    int aw = gridW / KB_ACTIONS;
+    for (int a = 0; a < KB_ACTIONS; a++) {
+        int cx = MARGIN + a * aw + aw / 2;
+        int sel = (row == KB_CHAR_ROWS && col == a);
+        const char *lbl = kb_actions[a];
+        char tmp[16];
+        if (a == 0) { snprintf(tmp, sizeof(tmp), "CAPS %s", caps ? "ON" : "OFF"); lbl = tmp; }
+        cell(s, ui->mono_sm, lbl, cx, ay + ch / 2, aw - 12, ch, sel, 0);
+    }
+
+    // hints
+    draw_text_r(s, ui->mono_sm, "A TYPE   B DEL   Y _   START OK", C_GREY,
+                s->w - MARGIN, s->h - 56);
+}
+
 void ui_draw_record(UI *ui, SDL_Surface *s, const UIInput *in, const UIRec *r) {
     fillc(s, 0, 0, s->w, s->h, C_BG);
 

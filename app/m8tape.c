@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <time.h>
 #include <math.h>
 #include <signal.h>
@@ -24,6 +25,7 @@
 #include "api.h"
 #include "utils.h"
 #include "ui.h"
+#include "wav.h"
 
 // --- detected input ---------------------------------------------------------
 struct Input {
@@ -160,21 +162,28 @@ static void remount(const char *opt) {
     int rc = system(cmd); (void)rc;
 }
 
+// --- library ----------------------------------------------------------------
+static const char *g_out_dir = ".";       // pak dir (logs, screenshot)
+static char g_lib[512];                    // <SDCARD>/M8Tape
+static char g_tmp[600];                    // raw take staged here before naming
+
+static void setup_library(void) {
+    char mp[256];
+    sdcard_mount(mp, sizeof(mp));
+    snprintf(g_lib, sizeof(g_lib), "%s/M8Tape", mp);
+    mkdir(g_lib, 0777);
+    char uns[600];
+    snprintf(uns, sizeof(uns), "%s/Unsorted", g_lib);
+    mkdir(uns, 0777);
+    snprintf(g_tmp, sizeof(g_tmp), "%s/.tmprec.wav", g_lib);
+}
+
 // --- recording --------------------------------------------------------------
 struct Rec { int active; pid_t pid; time_t start; char path[512]; };
-static const char *g_out_dir = ".";
 
 static int start_rec(struct Rec *r, const struct Input *in) {
     if (!in->present) return 0;
-    char dir[512];
-    snprintf(dir, sizeof(dir), "%s/recordings", g_out_dir);
-    mkdir(dir, 0777);
-
-    time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
-    char ts[32];
-    strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", tm);
-    snprintf(r->path, sizeof(r->path), "%s/rec_%s.wav", dir, ts);
+    snprintf(r->path, sizeof(r->path), "%s", g_tmp);  // stage raw take
 
     char dev[32], cstr[8], rstr[16];
     snprintf(dev, sizeof(dev), "hw:%d,0", in->card);
@@ -190,7 +199,7 @@ static int start_rec(struct Rec *r, const struct Input *in) {
     if (pid == 0) {
         setpriority(PRIO_PROCESS, 0, -19);
         char logp[600];
-        snprintf(logp, sizeof(logp), "%s/recordings/arecord.log", g_out_dir);
+        snprintf(logp, sizeof(logp), "%s/arecord.log", g_out_dir);
         freopen(logp, "w", stderr);
         freopen("/dev/null", "w", stdout);
         execlp("arecord", "arecord", "-D", dev, "-c", cstr, "-f", fmt, "-r", rstr,
@@ -210,8 +219,8 @@ static void stop_rec(struct Rec *r) {
         while (waitpid(r->pid, &status, WNOHANG) == 0 && i < 100) { usleep(50000); i++; }
         if (i >= 100) { kill(r->pid, SIGKILL); waitpid(r->pid, &status, 0); }
     }
-    remount("sync");
     r->active = 0; r->pid = 0;
+    // card stays async until finalize_save() (so the split writes fast)
 }
 
 static const char *basename_of(const char *p) {
@@ -219,7 +228,47 @@ static const char *basename_of(const char *p) {
     return b ? b + 1 : p;
 }
 
+// sanitize: keep [A-Za-z0-9._-], turn anything else into '_'; ensure non-empty.
+static void sanitize_name(const char *in, char *out, int cap) {
+    int j = 0;
+    for (int i = 0; in[i] && j < cap - 1; i++) {
+        char c = in[i];
+        if (isalnum((unsigned char)c) || c == '.' || c == '-' || c == '_') out[j++] = c;
+        else out[j++] = '_';
+    }
+    out[j] = '\0';
+    if (j == 0) snprintf(out, cap, "take");
+}
+
+// finalize_save: split (M8) or move (stereo) the staged raw take into the
+// library's Unsorted folder under the given name, then restore the sync mount.
+// returns the base name actually used (into outname).
+static void finalize_save(const char *name, int channels, char *outname, int outcap) {
+    char nm[64];
+    sanitize_name(name, nm, sizeof(nm));
+
+    char unsorted[700];
+    snprintf(unsorted, sizeof(unsorted), "%s/Unsorted", g_lib);
+    mkdir(g_lib, 0777);
+    mkdir(unsorted, 0777);
+
+    if (channels >= 4 && (channels % 2) == 0 && channels > 2) {
+        // multichannel (M8): split into stereo pairs, name as prefix
+        if (wav_split(g_tmp, unsorted, nm) > 0) unlink(g_tmp);
+    } else {
+        char dest[900];
+        snprintf(dest, sizeof(dest), "%s/%s.wav", unsorted, nm);
+        if (rename(g_tmp, dest) != 0) { /* best effort */ }
+    }
+    remount("sync");
+    snprintf(outname, outcap, "%s", nm);
+}
+
 // --- app --------------------------------------------------------------------
+enum Mode { M_HOME, M_REC, M_NAME };
+
+static int row_width(int row) { return row < KB_CHAR_ROWS ? KB_COLS : KB_ACTIONS; }
+
 int main(int argc, char *argv[]) {
     g_out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -228,6 +277,7 @@ int main(int argc, char *argv[]) {
     PAD_init();
     PWR_init();
     InitSettings();
+    setup_library();
 
     UI ui;
     char res_dir[600];
@@ -239,22 +289,66 @@ int main(int argc, char *argv[]) {
     write_detect_log(g_out_dir, &in);
 
     struct Rec rec = {0};
+    enum Mode mode = M_HOME;
     int quitting = 0, redraw = 1, frames = 0, shot_done = 0;
-    char last_take[512] = {0};
+    char last_take[64] = {0};
+
+    // naming/keyboard state
+    char name[40] = {0};
+    int caps = 0, krow = 1, kcol = 0, rec_channels = 2;
 
     while (!quitting) {
         GFX_startFrame();
         PWR_update(&redraw, NULL, NULL, NULL);
         PAD_poll();
 
-        if (rec.active) {
+        if (mode == M_REC) {
             if (PAD_justReleased(BTN_A)) {
+                rec_channels = in.channels;
                 stop_rec(&rec);
-                snprintf(last_take, sizeof(last_take), "%s", basename_of(rec.path));
+                time_t now = time(NULL);
+                struct tm *tm = localtime(&now);
+                strftime(name, sizeof(name), "rec_%H%M%S", tm);
+                caps = 0; krow = 1; kcol = 0;
+                mode = M_NAME;
             }
-            redraw = 1; // animate
-        } else {
-            if (PAD_justReleased(BTN_A) && in.present) start_rec(&rec, &in);
+            redraw = 1; // animate reels/timer
+        } else if (mode == M_NAME) {
+            int n = (int)strlen(name);
+            if (PAD_justReleased(BTN_UP))    { if (krow > 0) krow--; }
+            if (PAD_justReleased(BTN_DOWN))  { if (krow < KB_CHAR_ROWS) krow++; }
+            if (PAD_justReleased(BTN_LEFT))  { if (kcol > 0) kcol--; }
+            if (PAD_justReleased(BTN_RIGHT)) { if (kcol < row_width(krow) - 1) kcol++; }
+            if (kcol > row_width(krow) - 1) kcol = row_width(krow) - 1;
+
+            int confirm = 0;
+            if (PAD_justReleased(BTN_A)) {
+                if (krow < KB_CHAR_ROWS) {
+                    char k = kb_rows[krow][kcol];
+                    if (n < (int)sizeof(name) - 1) {
+                        name[n] = caps ? k : (char)tolower((unsigned char)k);
+                        name[n + 1] = '\0';
+                    }
+                } else if (kcol == 0) {
+                    caps = !caps;
+                } else if (kcol == 1) {
+                    if (n > 0) name[n - 1] = '\0';
+                } else {
+                    confirm = 1;
+                }
+            }
+            if (PAD_justReleased(BTN_B)) { if (n > 0) name[n - 1] = '\0'; }
+            if (PAD_justReleased(BTN_Y)) { if (n < (int)sizeof(name) - 1) { name[n] = '_'; name[n + 1] = '\0'; } }
+            if (PAD_justReleased(BTN_X)) caps = !caps;
+            if (PAD_justReleased(BTN_START)) confirm = 1;
+
+            if (confirm) {
+                finalize_save(name, rec_channels, last_take, sizeof(last_take));
+                mode = M_HOME;
+            }
+            redraw = 1;
+        } else { // M_HOME
+            if (PAD_justReleased(BTN_A) && in.present) { if (start_rec(&rec, &in)) mode = M_REC; }
             if (PAD_justReleased(BTN_B) || PAD_justReleased(BTN_MENU)) quitting = 1;
             if (++frames >= 60) {
                 frames = 0;
@@ -270,15 +364,15 @@ int main(int argc, char *argv[]) {
         if (redraw && fonts_ok) {
             UIInput ui_in = {in.present, classify(&in), in.channels, in.rate,
                              in.format[0] ? in.format : NULL};
-            if (rec.active) {
+            if (mode == M_REC) {
                 UIRec ui_r = {
-                    .elapsed = (long)(time(NULL) - rec.start),
-                    .take = last_take[0] ? last_take : basename_of(rec.path),
+                    .elapsed = (long)(time(NULL) - rec.start), .take = NULL,
                     .angle = (double)(SDL_GetTicks() % 1200) / 1200.0 * 2.0 * M_PI,
-                    .blink = ((time(NULL) % 2) == 0),
-                    .levelL = -1, .levelR = -1,
+                    .blink = ((time(NULL) % 2) == 0), .levelL = -1, .levelR = -1,
                 };
                 ui_draw_record(&ui, screen, &ui_in, &ui_r);
+            } else if (mode == M_NAME) {
+                ui_draw_keyboard(&ui, screen, "NAME SAMPLE", name, caps, krow, kcol);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }
@@ -289,7 +383,7 @@ int main(int argc, char *argv[]) {
                 SDL_SaveBMP(screen, shot);
                 shot_done = 1;
             }
-            if (!rec.active) redraw = 0;
+            if (mode == M_HOME) redraw = 0;
         } else if (!redraw) {
             GFX_sync();
         }

@@ -52,4 +52,16 @@ void ui_free(UI *ui);
 void ui_draw_home(UI *ui, SDL_Surface *s, const UIInput *in);
 void ui_draw_record(UI *ui, SDL_Surface *s, const UIInput *in, const UIRec *r);
 
+// --- on-screen keyboard -----------------------------------------------------
+#define KB_COLS 10
+#define KB_CHAR_ROWS 4
+#define KB_ACTIONS 3
+extern const char *kb_rows[KB_CHAR_ROWS];   // 10 chars each (uppercase)
+extern const char *kb_actions[KB_ACTIONS];  // {"CAPS","DEL","OK"}
+
+// draws the naming keyboard: title, the current text with a cursor, the char
+// grid + action row, and the selected cell. row 0..3 = chars, row 4 = actions.
+void ui_draw_keyboard(UI *ui, SDL_Surface *s, const char *title,
+                      const char *text, int caps, int row, int col);
+
 #endif

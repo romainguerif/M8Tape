@@ -28,6 +28,9 @@ int main(void) {
                .angle = 0.7, .blink = 1, .levelL = -1, .levelR = -1};
     ui_draw_record(&ui, s, &m8, &r); save(s, "out_record.bmp");
 
+    ui_draw_keyboard(&ui, s, "NAME SAMPLE", "rain_forest", 0, 1, 3);
+    save(s, "out_keyboard.bmp");
+
     SDL_FreeSurface(s);
     ui_free(&ui);
     TTF_Quit();
