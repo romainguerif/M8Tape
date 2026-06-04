@@ -47,3 +47,8 @@ research/te-inspiration/
 
 # Sonde M8 (sortie runtime)
 M8 Probe.pak/m8probe.txt
+
+# H3000 test artifacts
+app/h3000_test
+app/out_micropitch.wav
+app/out_*.wav
