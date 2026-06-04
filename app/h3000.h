@@ -18,4 +18,13 @@ typedef struct {
 // (a->ch becomes 2; mono input is upmixed by the effect). Returns 0 on success.
 int h3000_micropitch(Audio *a, const MicroPitchParams *p);
 
+// --- streaming core (for real-time preview) ---------------------------------
+typedef struct MicroPitchState MicroPitchState;
+MicroPitchState *mp_create(int rate);
+void mp_destroy(MicroPitchState *st);
+// n mono frames in `dry` -> n interleaved-stereo frames in `outLR`; params read
+// live (call repeatedly with persistent state for a continuous stream).
+void mp_block(MicroPitchState *st, const float *dry, int n,
+              const MicroPitchParams *p, float *outLR);
+
 #endif

@@ -16,6 +16,8 @@
 #include <math.h>
 #include <signal.h>
 #include <dirent.h>
+#include <pthread.h>
+#include <alsa/asoundlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -442,6 +444,68 @@ static int g_wave_cols, g_wave_dirty;
 static long g_view_span;               // visible frames (zoom)
 static long g_pk_vs = -1, g_pk_span = -1; // peak cache key (view start/span)
 
+// --- real-time H3000 preview (ALSA playback thread, live params) ------------
+static pthread_t g_pv_thread;
+static volatile int g_pv_run = 0;
+static int g_pv_active = 0;
+static float *g_pv_dry = NULL;     // mono source, looped
+static long g_pv_frames = 0;
+static int g_pv_rate = 48000;
+static MicroPitchParams g_pv_params; // live, updated by the UI thread
+
+static void *pv_func(void *arg) {
+    (void)arg;
+    snd_pcm_t *pcm;
+    if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) return NULL;
+    if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                           2, g_pv_rate, 1, 80000) < 0) { snd_pcm_close(pcm); return NULL; }
+    MicroPitchState *st = mp_create(g_pv_rate);
+    if (!st) { snd_pcm_close(pcm); return NULL; }
+    enum { BLK = 512 };
+    float dry[BLK], out[BLK * 2];
+    short s16[BLK * 2];
+    long pos = 0;
+    while (g_pv_run) {
+        for (int i = 0; i < BLK; i++) { dry[i] = g_pv_dry[pos]; if (++pos >= g_pv_frames) pos = 0; }
+        mp_block(st, dry, BLK, &g_pv_params, out);
+        for (int i = 0; i < BLK * 2; i++) {
+            float v = out[i]; if (v > 1) v = 1; if (v < -1) v = -1;
+            s16[i] = (short)(v * 32767);
+        }
+        snd_pcm_sframes_t w = snd_pcm_writei(pcm, s16, BLK);
+        if (w < 0) snd_pcm_recover(pcm, (int)w, 1);
+    }
+    mp_destroy(st);
+    snd_pcm_drain(pcm);
+    snd_pcm_close(pcm);
+    return NULL;
+}
+static void preview_stop(void) {
+    if (!g_pv_active) return;
+    g_pv_run = 0;
+    pthread_join(g_pv_thread, NULL);
+    free(g_pv_dry); g_pv_dry = NULL;
+    g_pv_active = 0;
+}
+static void preview_start(const Audio *a, const MicroPitchParams *p0) {
+    if (g_pv_active || !a->data || a->frames < 1) return;
+    long F = a->frames;
+    g_pv_dry = malloc((size_t)F * sizeof(float));
+    if (!g_pv_dry) return;
+    for (long i = 0; i < F; i++) {
+        float s = 0;
+        for (int c = 0; c < a->ch; c++) s += a->data[i * a->ch + c];
+        g_pv_dry[i] = s / a->ch;
+    }
+    g_pv_frames = F;
+    g_pv_rate = a->rate > 0 ? a->rate : 48000;
+    g_pv_params = *p0;
+    g_pv_run = 1; g_pv_active = 1;
+    if (pthread_create(&g_pv_thread, NULL, pv_func, NULL) != 0) {
+        g_pv_run = 0; g_pv_active = 0; free(g_pv_dry); g_pv_dry = NULL;
+    }
+}
+
 // --- app --------------------------------------------------------------------
 enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE, M_EDIT, M_EMENU, M_EDIT_EXIT, M_SETTINGS, M_H3000 };
 enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
@@ -735,21 +799,13 @@ int main(int argc, char *argv[]) {
                     case 5: mp.mix += dl * 0.05f; if (mp.mix < 0) mp.mix = 0; if (mp.mix > 1) mp.mix = 1; break;
                 }
             }
-            if (PAD_justPressed(BTN_A)) {                 // A/B preview
-                if (g_play_pid > 0) stop_play();
-                else {
-                    Audio c = g_au;
-                    c.data = malloc((size_t)g_au.frames * g_au.ch * sizeof(float));
-                    if (c.data) {
-                        memcpy(c.data, g_au.data, (size_t)g_au.frames * g_au.ch * sizeof(float));
-                        if (h3000_micropitch(&c, &mp) == 0 && wav_save(g_tmpplay, &c) == 0)
-                            start_play_path(g_tmpplay, -2);
-                        audio_free(&c);
-                    }
-                }
+            if (g_pv_active) g_pv_params = mp;            // live: apply slider moves now
+            if (PAD_justPressed(BTN_A)) {                 // toggle real-time preview (looped)
+                if (g_pv_active) preview_stop();
+                else preview_start(&g_au, &mp);
             }
             if (PAD_justPressed(BTN_START)) {             // RENDER (destructive)
-                stop_play();
+                preview_stop();
                 if (h3000_micropitch(&g_au, &mp) == 0) {
                     g_modified = 1; g_wave_dirty = 1;
                     g_view_span = g_au.frames;
@@ -757,7 +813,7 @@ int main(int argc, char *argv[]) {
                 }
                 mode = M_EDIT;
             }
-            if (PAD_justPressed(BTN_B)) { stop_play(); mode = M_EDIT; }
+            if (PAD_justPressed(BTN_B)) { preview_stop(); mode = M_EDIT; }
             redraw = 1;
         } else if (mode == M_SETTINGS) {
             if (NAV(BTN_UP))   { if (set_sel > 0) set_sel--; }
@@ -862,7 +918,7 @@ int main(int argc, char *argv[]) {
                 snprintf(a5, sizeof(a5), "%d%%", (int)(mp.mix * 100));
                 const char *hl[6] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX"};
                 const char *hv[6] = {a0, a1, a2, a3, a4, a5};
-                ui_draw_fx(&ui, screen, "MICROPITCH", hl, hv, 6, h_sel, g_play_pid > 0);
+                ui_draw_fx(&ui, screen, "MICROPITCH", hl, hv, 6, h_sel, g_pv_active);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }
@@ -874,6 +930,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    preview_stop();
     stop_play();
     if (rec.active) stop_rec(&rec);
     ui_free(&ui);
