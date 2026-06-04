@@ -470,17 +470,19 @@ static void pv_child(PvShared *shm) {
     int ok = 0;
     for (int t = 0; t < 10 && !ok; t++) {
         if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) == 0 &&
+            // 250 ms of buffer (was 80) so scheduling jitter / a heavy DSP block
+            // can't underrun the device -> the crackle/clicks heard on headphones.
             snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                               2, shm->rate, 1, 80000) == 0) ok = 1;
+                               2, shm->rate, 1, 250000) == 0) ok = 1;
         else { if (pcm) { snd_pcm_close(pcm); pcm = NULL; } usleep(50000); }
     }
     if (!ok) _exit(1);
     H3kEngine *st = h3k_create(shm->algo, shm->rate);
     if (!st) { snd_pcm_close(pcm); _exit(1); }
-    enum { BLK = 512 };
+    enum { BLK = 1024 };                           // bigger blocks = more headroom
     float dry[BLK], out[BLK * 2];
     short s16[BLK * 2];
-    long pos = 0;
+    long pos = 0, xruns = 0, blocks = 0;
     while (!shm->stop) {
         if (getppid() == 1) break;                 // parent gone → don't orphan
         for (int i = 0; i < BLK; i++) { dry[i] = src[pos]; if (++pos >= shm->frames) pos = 0; }
@@ -492,11 +494,18 @@ static void pv_child(PvShared *shm) {
             s16[i] = (short)(v * 32767);
         }
         snd_pcm_sframes_t w = snd_pcm_writei(pcm, s16, BLK);
-        if (w < 0) snd_pcm_recover(pcm, (int)w, 1);
+        if (w < 0) { xruns++; snd_pcm_recover(pcm, (int)w, 1); }
+        blocks++;
     }
     h3k_destroy(st);
     snd_pcm_drain(pcm);
     snd_pcm_close(pcm);
+    // breadcrumb: lets us tell real underruns (crackle) from clean playback.
+    char lp[1024];
+    snprintf(lp, sizeof(lp), "%s/preview.log", g_out_dir);
+    FILE *lf = fopen(lp, "w");
+    if (lf) { fprintf(lf, "algo=%d rate=%d blk=%d blocks=%ld xruns=%ld\n",
+                      shm->algo, shm->rate, BLK, blocks, xruns); fclose(lf); }
     _exit(0);
 }
 
@@ -536,6 +545,14 @@ static void preview_start(const Audio *a, int algo, const float *params) {
         float s = 0;
         for (int c = 0; c < a->ch; c++) s += a->data[i * a->ch + c];
         src[i] = s / a->ch;
+    }
+    // Seamless loop: fade the first & last ~12 ms to zero so the dry input has no
+    // step where the preview loop repeats (that step was an audible per-loop click).
+    long xf = (long)(0.012 * (double)shm->rate); if (xf > F / 4) xf = F / 4;
+    for (long k = 0; k < xf; k++) {
+        float g = (float)k / (float)xf;
+        src[k] *= g;
+        src[F - 1 - k] *= g;
     }
     pid_t pid = fork();
     if (pid < 0) { munmap(shm, sz); return; }
