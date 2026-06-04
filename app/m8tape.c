@@ -398,7 +398,7 @@ int main(int argc, char *argv[]) {
         reap_play();
 
         if (mode == M_REC) {
-            if (PAD_justReleased(BTN_A)) {
+            if (PAD_justPressed(BTN_A)) {
                 rec_channels = in.channels;
                 stop_rec(&rec);
                 time_t now = time(NULL); struct tm *tm = localtime(&now);
