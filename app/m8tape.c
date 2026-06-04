@@ -729,7 +729,9 @@ int main(int argc, char *argv[]) {
             if (PAD_justPressed(BTN_A) && in.present) { if (start_rec(&rec, &in)) { g_levelL = 0; g_levelR = 0; lvlctr = 0; last_sound = time(NULL); mode = M_REC; } }
             if (PAD_justPressed(BTN_X)) { snprintf(g_cur, sizeof(g_cur), "%s", g_lib); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; redraw = 1; }
             if (PAD_justPressed(BTN_SELECT)) { set_sel = 0; mode = M_SETTINGS; redraw = 1; }
-            if (PAD_justReleased(BTN_B) || PAD_justReleased(BTN_MENU)) quitting = 1;
+            // quit on a fresh B press (justReleased here would catch the release
+            // of a B used to leave Settings/Library → app would quit by mistake)
+            if (PAD_justPressed(BTN_B) || PAD_justReleased(BTN_MENU)) quitting = 1;
             if (++frames >= 60) {
                 frames = 0;
                 struct Input now; detect_input(&now);

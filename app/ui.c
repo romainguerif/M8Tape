@@ -191,17 +191,17 @@ void ui_draw_home(UI *ui, SDL_Surface *s, const UIInput *in) {
     status_dot(ui, s, x + 400, sy, "CLIP", 0);
     status_dot(ui, s, x + 580, sy, "SD",   1);
 
-    // record affordance: big ring, centered low
-    int cx = s->w / 2, cy = s->h - 196;
+    // record affordance: big ring, raised so its label clears the footer
+    int cx = s->w / 2, cy = s->h - 244;
     SDL_Color ring_c = in->present ? C_RED : C_HAIR;
-    ring(s, cx, cy, 94, 84, ring_c);
-    disc(s, cx, cy, 46, in->present ? C_RED : C_PANEL);
+    ring(s, cx, cy, 90, 80, ring_c);
+    disc(s, cx, cy, 44, in->present ? C_RED : C_PANEL);
     draw_label(s, ui->label, "RECORD", in->present ? C_WHITE : C_GREY,
-               cx - 58, cy + 126, 3);
+               cx - 58, cy + 104, 3);
 
-    // footer
+    // footer (abbreviated to avoid overlapping the RECORD label)
     fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
-    draw_text_r(s, ui->mono_sm, in->present ? "A REC  X LIBRARY  SEL SETTINGS  B QUIT" : "X LIBRARY  SEL SETTINGS  B QUIT",
+    draw_text_r(s, ui->mono_sm, in->present ? "A REC   X LIB   SEL SET   B QUIT" : "X LIB   SEL SET   B QUIT",
                 C_GREY, s->w - MARGIN, s->h - 64);
 }
 
