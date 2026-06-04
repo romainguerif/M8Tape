@@ -203,8 +203,8 @@ void ui_draw_home(UI *ui, SDL_Surface *s, const UIInput *in) {
         draw_text(s, ui->mono, "CONNECT A USB AUDIO DEVICE", C_GREY, x, y + 156);
     }
 
-    // status dots row
-    int sy = y + 232;
+    // status dots row (kept clear of the record ring's top arc below)
+    int sy = y + 200;
     status_dot(ui, s, x,       sy, "USB",  in->present);
     status_dot(ui, s, x + 200, sy, "SYNC", in->present);
     status_dot(ui, s, x + 400, sy, "CLIP", 0);
