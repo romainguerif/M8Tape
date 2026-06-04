@@ -595,6 +595,7 @@ int main(int argc, char *argv[]) {
     // recording level / auto-stop, settings cursor
     int lvlctr = 0, set_sel = 0;
     time_t last_sound = 0;
+    int edit_accel = 0;   // editor cursor acceleration (frames held)
 
     // H3000 MicroPitch params + cursor
     MicroPitchParams mp = {.cents_a = -9, .delay_a_ms = 15, .cents_b = 11,
@@ -767,10 +768,20 @@ int main(int argc, char *argv[]) {
             long page = span / 4; if (page < 1) page = 1;
             if (PAD_justPressed(BTN_R2)) { g_view_span /= 2; if (g_view_span < minspan) g_view_span = minspan; }
             if (PAD_justPressed(BTN_L2)) { g_view_span *= 2; if (g_view_span > g_au.frames) g_view_span = g_au.frames; }
-            if (NAV(BTN_LEFT))  g_curpos -= step;
-            if (NAV(BTN_RIGHT)) g_curpos += step;
-            if (NAV(BTN_L1))    g_curpos -= page;
-            if (NAV(BTN_R1))    g_curpos += page;
+            // held-direction cursor scrub with acceleration: a tap nudges one
+            // fine step; holding ramps the speed up (capped).
+            int cdir = PAD_isPressed(BTN_RIGHT) ? 1 : PAD_isPressed(BTN_LEFT) ? -1 : 0;
+            if (cdir) {
+                edit_accel++;
+                long mv = step;
+                if (edit_accel > 12) mv = step + (long)(step * (edit_accel - 12) * 0.6f);
+                long cap = span / 10; if (cap < 1) cap = 1;
+                if (mv > cap) mv = cap;
+                if (mv < 1) mv = 1;
+                g_curpos += cdir * mv;
+            } else edit_accel = 0;
+            if (NAV(BTN_L1)) g_curpos -= page;
+            if (NAV(BTN_R1)) g_curpos += page;
             if (g_curpos < 0) g_curpos = 0;
             if (g_curpos > g_au.frames) g_curpos = g_au.frames;
             if (PAD_justPressed(BTN_Y)) { g_in = au_snap_zero(&g_au, g_curpos); if (g_in >= g_out) g_in = g_out > 0 ? g_out - 1 : 0; }
