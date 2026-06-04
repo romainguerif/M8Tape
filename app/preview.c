@@ -31,6 +31,16 @@ int main(void) {
     ui_draw_keyboard(&ui, s, "NAME SAMPLE", "rain_forest", 0, 1, 3);
     save(s, "out_keyboard.bmp");
 
+    const char *names[] = {"Field", "Drums", "kick_01.wav", "rain_forest.wav", "snare_02.wav", "vox_take.wav"};
+    int isd[] = {1, 1, 0, 0, 0, 0};
+    ui_draw_browser(&ui, s, "M8TAPE / Unsorted", names, isd, 6, 3, 0, 3,
+                    "A OPEN/PLAY  Y ACTIONS  X NEW FOLDER  B BACK");
+    save(s, "out_browser.bmp");
+
+    const char *opts[] = {"PLAY", "RENAME", "MOVE", "DELETE"};
+    ui_draw_menu(&ui, s, "ACTIONS", opts, 4, 1);
+    save(s, "out_menu.bmp");
+
     SDL_FreeSurface(s);
     ui_free(&ui);
     TTF_Quit();

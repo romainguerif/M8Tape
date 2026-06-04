@@ -64,4 +64,16 @@ extern const char *kb_actions[KB_ACTIONS];  // {"CAPS","DEL","OK"}
 void ui_draw_keyboard(UI *ui, SDL_Surface *s, const char *title,
                       const char *text, int caps, int row, int col);
 
+// --- library browser / menus ------------------------------------------------
+// file list: names[i], isdir[i]; sel = highlighted, scroll = first visible row,
+// play_idx = currently-playing file (or -1). hints drawn in the footer.
+void ui_draw_browser(UI *ui, SDL_Surface *s, const char *crumb,
+                     const char **names, const int *isdir, int count,
+                     int sel, int scroll, int play_idx, const char *hints);
+int  ui_browser_visible_rows(SDL_Surface *s); // rows that fit, for scrolling
+
+void ui_draw_menu(UI *ui, SDL_Surface *s, const char *title,
+                  const char **opts, int count, int sel);
+void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2);
+
 #endif

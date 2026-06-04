@@ -127,14 +127,14 @@ int ui_load_fonts(UI *ui, const char *dir) {
     memset(ui, 0, sizeof(*ui));
     // Nothing-style dot-matrix font for EVERYTHING (scaled up for the tiny,
     // high-density 3.2" 1024x768 panel).
-    ui->wordmark = openf(dir, "dotmatrix.ttf", 56);
-    ui->seg_big  = openf(dir, "dotmatrix.ttf", 150); // hero timecode
-    ui->seg_mid  = openf(dir, "dotmatrix.ttf", 56);
-    ui->hero     = openf(dir, "dotmatrix.ttf", 80);  // source name
-    ui->h1       = openf(dir, "dotmatrix.ttf", 56);
-    ui->label    = openf(dir, "dotmatrix.ttf", 30);
-    ui->mono     = openf(dir, "dotmatrix.ttf", 32);
-    ui->mono_sm  = openf(dir, "dotmatrix.ttf", 26);
+    ui->wordmark = openf(dir, "dotmatrix.ttf", 64);
+    ui->seg_big  = openf(dir, "dotmatrix.ttf", 172); // hero timecode
+    ui->seg_mid  = openf(dir, "dotmatrix.ttf", 64);
+    ui->hero     = openf(dir, "dotmatrix.ttf", 92);  // source name
+    ui->h1       = openf(dir, "dotmatrix.ttf", 64);
+    ui->label    = openf(dir, "dotmatrix.ttf", 40);
+    ui->mono     = openf(dir, "dotmatrix.ttf", 44);
+    ui->mono_sm  = openf(dir, "dotmatrix.ttf", 34);
     if (!ui->wordmark || !ui->seg_big || !ui->hero || !ui->h1 ||
         !ui->label || !ui->mono || !ui->mono_sm)
         return 1;
@@ -201,8 +201,75 @@ void ui_draw_home(UI *ui, SDL_Surface *s, const UIInput *in) {
 
     // footer
     fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
-    draw_text_r(s, ui->mono_sm, in->present ? "A REC    B QUIT" : "B QUIT",
+    draw_text_r(s, ui->mono_sm, in->present ? "A REC   X LIBRARY   B QUIT" : "X LIBRARY   B QUIT",
                 C_GREY, s->w - MARGIN, s->h - 64);
+}
+
+// --- library browser / menus ------------------------------------------------
+#define BR_TOP 150
+#define BR_ROWH 78
+
+int ui_browser_visible_rows(SDL_Surface *s) {
+    int avail = (s->h - 100) - BR_TOP;
+    int n = avail / BR_ROWH;
+    return n < 1 ? 1 : n;
+}
+
+void ui_draw_browser(UI *ui, SDL_Surface *s, const char *crumb,
+                     const char **names, const int *isdir, int count,
+                     int sel, int scroll, int play_idx, const char *hints) {
+    fillc(s, 0, 0, s->w, s->h, C_BG);
+    draw_label(s, ui->label, crumb ? crumb : "LIBRARY", C_GREY, MARGIN, 44, 2);
+    fillc(s, MARGIN, 112, s->w - 2 * MARGIN, 2, C_HAIR);
+
+    int vis = ui_browser_visible_rows(s);
+    if (count == 0) {
+        draw_text_c(s, ui->mono, "EMPTY", C_HAIR, s->w / 2, s->h / 2 - 30);
+    }
+    for (int i = 0; i < vis; i++) {
+        int idx = scroll + i;
+        if (idx >= count) break;
+        int y = BR_TOP + i * BR_ROWH;
+        int seld = (idx == sel);
+        if (seld) {
+            fillc(s, MARGIN, y, s->w - 2 * MARGIN, BR_ROWH - 10, C_PANEL);
+            fillc(s, MARGIN, y, 7, BR_ROWH - 10, C_RED);
+        }
+        // type marker
+        const char *mark = isdir[idx] ? "[ ]" : ">";
+        draw_text(s, ui->mono_sm, mark, isdir[idx] ? C_AMBER : C_GREY, MARGIN + 24, y + 16);
+        draw_text(s, ui->mono, names[idx], C_WHITE, MARGIN + 110, y + 8);
+        if (idx == play_idx)
+            draw_text_r(s, ui->mono_sm, "PLAYING", C_RED, s->w - MARGIN - 24, y + 16);
+        else if (isdir[idx])
+            draw_text_r(s, ui->mono_sm, "DIR", C_HAIR, s->w - MARGIN - 24, y + 16);
+    }
+    fillc(s, MARGIN, s->h - 88, s->w - 2 * MARGIN, 2, C_HAIR);
+    draw_text_r(s, ui->mono_sm, hints ? hints : "", C_GREY, s->w - MARGIN, s->h - 62);
+}
+
+void ui_draw_menu(UI *ui, SDL_Surface *s, const char *title,
+                  const char **opts, int count, int sel) {
+    fillc(s, 0, 0, s->w, s->h, C_BG);
+    draw_label(s, ui->label, title ? title : "ACTIONS", C_GREY, MARGIN, 44, 2);
+    fillc(s, MARGIN, 112, s->w - 2 * MARGIN, 2, C_HAIR);
+    int top = 200, rowh = 86;
+    for (int i = 0; i < count; i++) {
+        int y = top + i * rowh;
+        if (i == sel) {
+            fillc(s, MARGIN, y, s->w - 2 * MARGIN, rowh - 12, C_PANEL);
+            fillc(s, MARGIN, y, 7, rowh - 12, C_RED);
+        }
+        draw_text(s, ui->hero, opts[i], i == sel ? C_WHITE : C_GREY, MARGIN + 40, y + 4);
+    }
+    draw_text_r(s, ui->mono_sm, "A SELECT   B BACK", C_GREY, s->w - MARGIN, s->h - 62);
+}
+
+void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2) {
+    fillc(s, 0, 0, s->w, s->h, C_BG);
+    draw_text_c(s, ui->hero, l1 ? l1 : "", C_RED, s->w / 2, s->h / 2 - 110);
+    draw_text_c(s, ui->h1, l2 ? l2 : "", C_WHITE, s->w / 2, s->h / 2 - 10);
+    draw_text_c(s, ui->mono, "A  YES        B  NO", C_GREY, s->w / 2, s->h / 2 + 90);
 }
 
 // --- on-screen keyboard -----------------------------------------------------

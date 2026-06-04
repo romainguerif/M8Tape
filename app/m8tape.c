@@ -11,9 +11,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <strings.h>
 #include <time.h>
 #include <math.h>
 #include <signal.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -264,9 +266,97 @@ static void finalize_save(const char *name, int channels, char *outname, int out
     snprintf(outname, outcap, "%s", nm);
 }
 
-// --- app --------------------------------------------------------------------
-enum Mode { M_HOME, M_REC, M_NAME };
+// --- library browser + playback ---------------------------------------------
+struct Entry { char name[256]; int is_dir; };
+static char g_cur[1024];
+static struct Entry g_ents[512];
+static int g_nent, g_bsel, g_bscroll;
+static pid_t g_play_pid;
+static int g_play_sel = -1;
 
+static int ent_cmp(const void *a, const void *b) {
+    const struct Entry *x = a, *y = b;
+    if (x->is_dir != y->is_dir) return y->is_dir - x->is_dir;
+    return strcasecmp(x->name, y->name);
+}
+
+static void list_dir(void) {
+    g_nent = 0;
+    DIR *d = opendir(g_cur);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) && g_nent < 512) {
+            if (e->d_name[0] == '.') continue;             // hide dotfiles
+            char p[1300];
+            snprintf(p, sizeof(p), "%s/%s", g_cur, e->d_name);
+            struct stat st;
+            if (stat(p, &st) != 0) continue;
+            int isdir = S_ISDIR(st.st_mode);
+            if (!isdir) {
+                const char *dot = strrchr(e->d_name, '.');
+                if (!dot || strcasecmp(dot, ".wav") != 0) continue; // wav only
+            }
+            snprintf(g_ents[g_nent].name, sizeof(g_ents[g_nent].name), "%s", e->d_name);
+            g_ents[g_nent].is_dir = isdir;
+            g_nent++;
+        }
+        closedir(d);
+    }
+    qsort(g_ents, g_nent, sizeof(struct Entry), ent_cmp);
+    if (g_bsel >= g_nent) g_bsel = g_nent ? g_nent - 1 : 0;
+}
+
+static void crumb_of(char *out, int cap) {
+    if (strcmp(g_cur, g_lib) == 0) snprintf(out, cap, "M8TAPE");
+    else snprintf(out, cap, "M8TAPE%s", g_cur + strlen(g_lib));
+}
+
+static int at_lib_root(void) { return strcmp(g_cur, g_lib) == 0; }
+
+static void reap_play(void) {
+    if (g_play_pid > 0) {
+        int st;
+        if (waitpid(g_play_pid, &st, WNOHANG) == g_play_pid) { g_play_pid = 0; g_play_sel = -1; }
+    }
+}
+static void stop_play(void) {
+    if (g_play_pid > 0) { kill(g_play_pid, SIGTERM); int st; waitpid(g_play_pid, &st, 0); }
+    g_play_pid = 0; g_play_sel = -1;
+}
+static void start_play(int idx) {
+    stop_play();
+    char p[1300];
+    snprintf(p, sizeof(p), "%s/%s", g_cur, g_ents[idx].name);
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        freopen("/dev/null", "w", stderr); freopen("/dev/null", "w", stdout);
+        execlp("aplay", "aplay", "-q", p, (char *)NULL);
+        _exit(127);
+    }
+    g_play_pid = pid; g_play_sel = idx;
+}
+
+static void enter_dir(const char *name) {
+    stop_play();
+    char nc[1024];
+    snprintf(nc, sizeof(nc), "%s/%s", g_cur, name);
+    snprintf(g_cur, sizeof(g_cur), "%s", nc);
+    g_bsel = 0; g_bscroll = 0; list_dir();
+}
+static void go_up(void) {
+    stop_play();
+    char *slash = strrchr(g_cur, '/');
+    if (slash && slash > g_cur) *slash = '\0';
+    if (strlen(g_cur) < strlen(g_lib)) snprintf(g_cur, sizeof(g_cur), "%s", g_lib);
+    g_bsel = 0; g_bscroll = 0; list_dir();
+}
+
+// --- app --------------------------------------------------------------------
+enum Mode { M_HOME, M_REC, M_NAME, M_BROWSE, M_MENU, M_CONFIRM, M_MOVE };
+enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER };
+
+#define NAV(b) (PAD_justPressed(b) || PAD_justRepeated(b))
 static int row_width(int row) { return row < KB_CHAR_ROWS ? KB_COLS : KB_ACTIONS; }
 
 int main(int argc, char *argv[]) {
@@ -295,100 +385,192 @@ int main(int argc, char *argv[]) {
 
     // naming/keyboard state
     char name[40] = {0};
-    int caps = 0, krow = 1, kcol = 0, rec_channels = 2;
+    int caps = 0, krow = 1, kcol = 0, rec_channels = 2, name_purpose = NP_REC;
+
+    // actions menu + move state
+    const char *menu_opts[5]; int menu_n = 0, menu_sel = 0;
+    char move_from[1024] = {0}, move_name[256] = {0};
 
     while (!quitting) {
         GFX_startFrame();
         PWR_update(&redraw, NULL, NULL, NULL);
         PAD_poll();
+        reap_play();
 
         if (mode == M_REC) {
             if (PAD_justReleased(BTN_A)) {
                 rec_channels = in.channels;
                 stop_rec(&rec);
-                time_t now = time(NULL);
-                struct tm *tm = localtime(&now);
+                time_t now = time(NULL); struct tm *tm = localtime(&now);
                 strftime(name, sizeof(name), "rec_%H%M%S", tm);
-                caps = 0; krow = 1; kcol = 0;
+                name_purpose = NP_REC; caps = 0; krow = 1; kcol = 0;
                 mode = M_NAME;
             }
-            redraw = 1; // animate reels/timer
+            redraw = 1;
         } else if (mode == M_NAME) {
             int n = (int)strlen(name);
-            if (PAD_justReleased(BTN_UP))    { if (krow > 0) krow--; }
-            if (PAD_justReleased(BTN_DOWN))  { if (krow < KB_CHAR_ROWS) krow++; }
-            if (PAD_justReleased(BTN_LEFT))  { if (kcol > 0) kcol--; }
-            if (PAD_justReleased(BTN_RIGHT)) { if (kcol < row_width(krow) - 1) kcol++; }
+            if (NAV(BTN_UP))    { if (krow > 0) krow--; }
+            if (NAV(BTN_DOWN))  { if (krow < KB_CHAR_ROWS) krow++; }
+            if (NAV(BTN_LEFT))  { if (kcol > 0) kcol--; }
+            if (NAV(BTN_RIGHT)) { if (kcol < row_width(krow) - 1) kcol++; }
             if (kcol > row_width(krow) - 1) kcol = row_width(krow) - 1;
 
             int confirm = 0;
-            if (PAD_justReleased(BTN_A)) {
+            if (PAD_justPressed(BTN_A)) {
                 if (krow < KB_CHAR_ROWS) {
                     char k = kb_rows[krow][kcol];
-                    if (n < (int)sizeof(name) - 1) {
-                        name[n] = caps ? k : (char)tolower((unsigned char)k);
-                        name[n + 1] = '\0';
-                    }
-                } else if (kcol == 0) {
-                    caps = !caps;
-                } else if (kcol == 1) {
-                    if (n > 0) name[n - 1] = '\0';
-                } else {
-                    confirm = 1;
-                }
+                    if (n < (int)sizeof(name) - 1) { name[n] = caps ? k : (char)tolower((unsigned char)k); name[n + 1] = '\0'; }
+                } else if (kcol == 0) caps = !caps;
+                else if (kcol == 1) { if (n > 0) name[n - 1] = '\0'; }
+                else confirm = 1;
             }
-            if (PAD_justReleased(BTN_B)) { if (n > 0) name[n - 1] = '\0'; }
-            if (PAD_justReleased(BTN_Y)) { if (n < (int)sizeof(name) - 1) { name[n] = '_'; name[n + 1] = '\0'; } }
-            if (PAD_justReleased(BTN_X)) caps = !caps;
-            if (PAD_justReleased(BTN_START)) confirm = 1;
+            if (PAD_justPressed(BTN_B)) { if (n > 0) name[n - 1] = '\0'; }
+            if (PAD_justPressed(BTN_Y)) { if (n < (int)sizeof(name) - 1) { name[n] = '_'; name[n + 1] = '\0'; } }
+            if (PAD_justPressed(BTN_X)) caps = !caps;
+            if (PAD_justPressed(BTN_START)) confirm = 1;
 
             if (confirm) {
-                finalize_save(name, rec_channels, last_take, sizeof(last_take));
-                mode = M_HOME;
+                char nm[64]; sanitize_name(name, nm, sizeof(nm));
+                if (name_purpose == NP_REC) {
+                    finalize_save(name, rec_channels, last_take, sizeof(last_take));
+                    mode = M_HOME;
+                } else if (name_purpose == NP_RENAME && g_nent > 0) {
+                    char oldp[1300], newp[1400];
+                    snprintf(oldp, sizeof(oldp), "%s/%s", g_cur, g_ents[g_bsel].name);
+                    if (g_ents[g_bsel].is_dir) snprintf(newp, sizeof(newp), "%s/%s", g_cur, nm);
+                    else snprintf(newp, sizeof(newp), "%s/%s.wav", g_cur, nm);
+                    rename(oldp, newp); stop_play(); list_dir(); mode = M_BROWSE;
+                } else {
+                    char np[1300]; snprintf(np, sizeof(np), "%s/%s", g_cur, nm); mkdir(np, 0777);
+                    list_dir(); mode = M_BROWSE;
+                }
+            }
+            redraw = 1;
+        } else if (mode == M_BROWSE) {
+            int vis = ui_browser_visible_rows(screen);
+            if (NAV(BTN_UP))   { if (g_bsel > 0) g_bsel--; }
+            if (NAV(BTN_DOWN)) { if (g_bsel < g_nent - 1) g_bsel++; }
+            if (g_bsel < g_bscroll) g_bscroll = g_bsel;
+            if (g_bsel >= g_bscroll + vis) g_bscroll = g_bsel - vis + 1;
+
+            if (PAD_justPressed(BTN_A) && g_nent > 0) {
+                if (g_ents[g_bsel].is_dir) enter_dir(g_ents[g_bsel].name);
+                else { if (g_play_sel == g_bsel) stop_play(); else start_play(g_bsel); }
+            }
+            if (PAD_justPressed(BTN_B)) { if (at_lib_root()) { stop_play(); mode = M_HOME; redraw = 1; } else go_up(); }
+            if (PAD_justPressed(BTN_X)) { name[0] = '\0'; name_purpose = NP_NEWFOLDER; caps = 0; krow = 1; kcol = 0; mode = M_NAME; }
+            if (PAD_justPressed(BTN_Y) && g_nent > 0) {
+                menu_n = 0;
+                menu_opts[menu_n++] = g_ents[g_bsel].is_dir ? "OPEN" : "PLAY";
+                menu_opts[menu_n++] = "RENAME";
+                menu_opts[menu_n++] = "MOVE";
+                menu_opts[menu_n++] = "DELETE";
+                menu_sel = 0; mode = M_MENU;
+            }
+            redraw = 1;
+        } else if (mode == M_MENU) {
+            if (NAV(BTN_UP))   { if (menu_sel > 0) menu_sel--; }
+            if (NAV(BTN_DOWN)) { if (menu_sel < menu_n - 1) menu_sel++; }
+            if (PAD_justPressed(BTN_B)) mode = M_BROWSE;
+            if (PAD_justPressed(BTN_A)) {
+                const char *op = menu_opts[menu_sel];
+                if (!strcmp(op, "OPEN")) { enter_dir(g_ents[g_bsel].name); mode = M_BROWSE; }
+                else if (!strcmp(op, "PLAY")) { start_play(g_bsel); mode = M_BROWSE; }
+                else if (!strcmp(op, "RENAME")) {
+                    snprintf(name, sizeof(name), "%s", g_ents[g_bsel].name);
+                    if (!g_ents[g_bsel].is_dir) { char *d = strrchr(name, '.'); if (d && !strcasecmp(d, ".wav")) *d = '\0'; }
+                    name_purpose = NP_RENAME; caps = 0; krow = 1; kcol = 0; mode = M_NAME;
+                } else if (!strcmp(op, "MOVE")) {
+                    snprintf(move_from, sizeof(move_from), "%s", g_cur);
+                    snprintf(move_name, sizeof(move_name), "%s", g_ents[g_bsel].name);
+                    stop_play();
+                    snprintf(g_cur, sizeof(g_cur), "%s", g_lib);
+                    g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_MOVE;
+                } else if (!strcmp(op, "DELETE")) mode = M_CONFIRM;
+            }
+            redraw = 1;
+        } else if (mode == M_CONFIRM) {
+            if (PAD_justPressed(BTN_B)) mode = M_BROWSE;
+            if (PAD_justPressed(BTN_A)) {
+                char p[1300]; snprintf(p, sizeof(p), "%s/%s", g_cur, g_ents[g_bsel].name);
+                stop_play();
+                if (g_ents[g_bsel].is_dir) { char c[1400]; snprintf(c, sizeof(c), "rm -rf '%s'", p); int rc = system(c); (void)rc; }
+                else unlink(p);
+                list_dir(); mode = M_BROWSE;
+            }
+            redraw = 1;
+        } else if (mode == M_MOVE) {
+            int vis = ui_browser_visible_rows(screen);
+            if (NAV(BTN_UP))   { if (g_bsel > 0) g_bsel--; }
+            if (NAV(BTN_DOWN)) { if (g_bsel < g_nent - 1) g_bsel++; }
+            if (g_bsel < g_bscroll) g_bscroll = g_bsel;
+            if (g_bsel >= g_bscroll + vis) g_bscroll = g_bsel - vis + 1;
+            if (PAD_justPressed(BTN_A) && g_nent > 0 && g_ents[g_bsel].is_dir) enter_dir(g_ents[g_bsel].name);
+            if (PAD_justPressed(BTN_B)) {
+                if (at_lib_root()) { snprintf(g_cur, sizeof(g_cur), "%s", move_from); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; }
+                else go_up();
+            }
+            if (PAD_justPressed(BTN_START) || PAD_justPressed(BTN_Y)) {
+                char src[1300], dst[1400];
+                snprintf(src, sizeof(src), "%s/%s", move_from, move_name);
+                snprintf(dst, sizeof(dst), "%s/%s", g_cur, move_name);
+                if (strcmp(src, dst) != 0) rename(src, dst);
+                snprintf(g_cur, sizeof(g_cur), "%s", move_from);
+                g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE;
             }
             redraw = 1;
         } else { // M_HOME
-            if (PAD_justReleased(BTN_A) && in.present) { if (start_rec(&rec, &in)) mode = M_REC; }
+            if (PAD_justPressed(BTN_A) && in.present) { if (start_rec(&rec, &in)) mode = M_REC; }
+            if (PAD_justPressed(BTN_X)) { snprintf(g_cur, sizeof(g_cur), "%s", g_lib); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; redraw = 1; }
             if (PAD_justReleased(BTN_B) || PAD_justReleased(BTN_MENU)) quitting = 1;
             if (++frames >= 60) {
                 frames = 0;
-                struct Input now;
-                detect_input(&now);
-                if (now.present != in.present || now.channels != in.channels ||
-                    now.card != in.card) {
+                struct Input now; detect_input(&now);
+                if (now.present != in.present || now.channels != in.channels || now.card != in.card) {
                     in = now; write_detect_log(g_out_dir, &in); redraw = 1;
                 }
             }
         }
 
         if (redraw && fonts_ok) {
-            UIInput ui_in = {in.present, classify(&in), in.channels, in.rate,
-                             in.format[0] ? in.format : NULL};
+            UIInput ui_in = {in.present, classify(&in), in.channels, in.rate, in.format[0] ? in.format : NULL};
             if (mode == M_REC) {
-                UIRec ui_r = {
-                    .elapsed = (long)(time(NULL) - rec.start), .take = NULL,
+                UIRec ui_r = { .elapsed = (long)(time(NULL) - rec.start), .take = NULL,
                     .angle = (double)(SDL_GetTicks() % 1200) / 1200.0 * 2.0 * M_PI,
-                    .blink = ((time(NULL) % 2) == 0), .levelL = -1, .levelR = -1,
-                };
+                    .blink = ((time(NULL) % 2) == 0), .levelL = -1, .levelR = -1 };
                 ui_draw_record(&ui, screen, &ui_in, &ui_r);
             } else if (mode == M_NAME) {
-                ui_draw_keyboard(&ui, screen, "NAME SAMPLE", name, caps, krow, kcol);
+                const char *title = name_purpose == NP_RENAME ? "RENAME"
+                                  : name_purpose == NP_NEWFOLDER ? "NEW FOLDER" : "NAME SAMPLE";
+                ui_draw_keyboard(&ui, screen, title, name, caps, krow, kcol);
+            } else if (mode == M_BROWSE || mode == M_MOVE) {
+                const char *names[512]; int isd[512];
+                for (int i = 0; i < g_nent; i++) { names[i] = g_ents[i].name; isd[i] = g_ents[i].is_dir; }
+                char crumb[700]; crumb_of(crumb, sizeof(crumb));
+                if (mode == M_MOVE) {
+                    char mc[770]; snprintf(mc, sizeof(mc), "MOVE TO  %s", crumb);
+                    ui_draw_browser(&ui, screen, mc, names, isd, g_nent, g_bsel, g_bscroll, -1,
+                                    "START HERE   A OPEN   B BACK");
+                } else {
+                    ui_draw_browser(&ui, screen, crumb, names, isd, g_nent, g_bsel, g_bscroll, g_play_sel,
+                                    "A OPEN/PLAY  Y ACTIONS  X NEW FOLDER  B BACK");
+                }
+            } else if (mode == M_MENU) {
+                ui_draw_menu(&ui, screen, "ACTIONS", menu_opts, menu_n, menu_sel);
+            } else if (mode == M_CONFIRM) {
+                ui_draw_confirm(&ui, screen, "DELETE", g_nent ? g_ents[g_bsel].name : "");
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }
             GFX_flip(screen);
-            if (!shot_done) {  // one-shot screenshot for remote design checks
-                char shot[640];
-                snprintf(shot, sizeof(shot), "%s/screen.bmp", g_out_dir);
-                SDL_SaveBMP(screen, shot);
-                shot_done = 1;
-            }
+            if (!shot_done) { char shot[640]; snprintf(shot, sizeof(shot), "%s/screen.bmp", g_out_dir); SDL_SaveBMP(screen, shot); shot_done = 1; }
             if (mode == M_HOME) redraw = 0;
         } else if (!redraw) {
             GFX_sync();
         }
     }
 
+    stop_play();
     if (rec.active) stop_rec(&rec);
     ui_free(&ui);
     QuitSettings();
