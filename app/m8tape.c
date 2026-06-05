@@ -180,25 +180,52 @@ static int dir_exists(const char *p) {
     struct stat st;
     return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
 }
-// Locate the LGPT/Piggy data dir. It lives under PortMaster's HIDDEN .ports/, so
-// the browser (which hides dotdirs) can't reach it by navigating — hence a direct
-// jump. Prefer the user's custom "dev" build + its samplelib.
+// Pull value="..." (or value='...') for `key` out of an XML-ish line; trims a
+// trailing slash. Returns 1 on success.
+static int xml_value(const char *line, const char *key, char *out, int cap) {
+    const char *k = strstr(line, key); if (!k) return 0;
+    const char *v = strstr(k, "value"); if (!v) return 0;
+    v += 5;
+    while (*v && *v != '"' && *v != '\'') v++;
+    if (!*v) return 0;
+    char q = *v++; int i = 0;
+    while (*v && *v != q && i < cap - 1) out[i++] = *v++;
+    out[i] = '\0';
+    while (i > 0 && out[i - 1] == '/') out[--i] = '\0';
+    return i > 0;
+}
+// Locate the LGPT/Piggy SAMPLE LIBRARY for the direct jump. The data is under
+// PortMaster's HIDDEN .ports/ (the browser hides dotdirs, so it can't be reached
+// by navigating). Best source of truth = the build's config.xml <SAMPLELIB .../>
+// (the user's dev build points at the stock build's populated samplelib). Falls
+// back to scanning for an existing samplelib, then any gamedir.
 static void detect_lgpt(void) {
     g_lgpt[0] = '\0';
     static const char *const roots[] = {
         "Roms/Ports (PORTS)/.ports", "Roms/PORTS/.ports", "Roms/ports/.ports", "Ports/.ports", 0 };
+    static const char *const games[] = { "littlegptracker-dev", "littlegptracker", 0 };
+    char cfg[1000], line[1024], val[1024], p[1024];
+    // 1) read SAMPLELIB straight from a build's config.xml (follows the user's config)
+    for (int r = 0; roots[r] && !g_lgpt[0]; r++)
+        for (int g = 0; games[g] && !g_lgpt[0]; g++) {
+            snprintf(cfg, sizeof(cfg), "%s/%s/%s/config.xml", g_sd, roots[r], games[g]);
+            FILE *f = fopen(cfg, "r"); if (!f) continue;
+            while (fgets(line, sizeof(line), f))
+                if (xml_value(line, "SAMPLELIB", val, sizeof(val)) && dir_exists(val)) {
+                    snprintf(g_lgpt, sizeof(g_lgpt), "%s", val); break;
+                }
+            fclose(f);
+        }
+    if (g_lgpt[0]) return;
+    // 2) fallback: first existing samplelib, then any gamedir
     static const char *const subs[] = {
-        "littlegptracker-dev/samplelib", "littlegptracker-dev",
-        "littlegptracker/samplelib", "littlegptracker", 0 };
-    char p[1024];
-    for (int r = 0; roots[r]; r++) {
+        "littlegptracker/samplelib", "littlegptracker-dev/samplelib",
+        "littlegptracker-dev", "littlegptracker", 0 };
+    for (int r = 0; roots[r]; r++)
         for (int s = 0; subs[s]; s++) {
             snprintf(p, sizeof(p), "%s/%s/%s", g_sd, roots[r], subs[s]);
             if (dir_exists(p)) { snprintf(g_lgpt, sizeof(g_lgpt), "%s", p); return; }
         }
-        snprintf(p, sizeof(p), "%s/%s", g_sd, roots[r]);
-        if (dir_exists(p)) { snprintf(g_lgpt, sizeof(g_lgpt), "%s", p); return; }
-    }
 }
 
 static void setup_library(void) {
