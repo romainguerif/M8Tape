@@ -619,9 +619,9 @@ static void pv_child(PvShared *shm) {
         else { if (pcm) { snd_pcm_close(pcm); pcm = NULL; } usleep(50000); }
     }
     if (!ok) _exit(1);
-    // Re-apply the system volume now the PCM/codec is open: opening "default" can
-    // reset the mixer, leaving the preview silent until the user nudges volume +/-.
-    SetVolume(GetVolume());
+    // NOTE: do NOT touch the mixer here. SetVolume()/SetRawVolume() shell out to
+    // amixer and fight keymon/PWR (the system volume owner) — doing it from this
+    // forked child left the volume stuck low and the volume buttons unresponsive.
     H3kEngine *st = h3k_create(shm->algo, shm->rate);
     if (!st) { snd_pcm_close(pcm); _exit(1); }
     enum { BLK = 2048 };                           // bigger blocks = more headroom
@@ -760,13 +760,8 @@ int main(int argc, char *argv[]) {
     PAD_init();
     PWR_init();
     InitSettings();
-    PWR_disableAutosleep();   // audio app: never idle-sleep the screen mid-listen
-                              // (during preview/playback there are no button presses,
-                              //  and the system 'sleep off' wasn't honored in-app)
-    SetVolume(GetVolume());   // push the saved system volume to the mixer on launch
-                              // (we open ALSA directly, so nothing else applies it →
-                              //  otherwise the NextUI volume isn't honored until the
-                              //  user nudges +/- in-app)
+    PWR_disableAutosleep();   // audio app: never idle-sleep mid-listen (just a flag,
+                              // doesn't touch the mixer; keymon/PWR own the volume)
     setup_library();
     load_settings();
 
