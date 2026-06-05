@@ -88,6 +88,8 @@ typedef struct {
     int   haveAR;           // model is valid yet?
     long  lastFit;          // absolute index of the last AR re-fit
     float sigma;            // robust residual scale (1.4826 * MAD) from last fit
+
+    long  clicks;           // cumulative count of repaired bursts (for the live meter)
 } DcState;
 
 // --- denormal / NaN scrub ----------------------------------------------------
@@ -418,8 +420,16 @@ static void dc_resolve(DcState *s, float k_thresh, int maxGap, float strength,
             float v = strength * fixed + (1.0f - strength) * orig;
             s->out[pos & DC_RING_MASK] = dc_clean(v);
         }
+        s->clicks++;                       // one more defect repaired (live meter)
         s->resolved = gapEnd + 1;          // jump past the repaired burst
     }
+}
+
+// live meter: cumulative number of clicks repaired since this instance started.
+static int dc_meter(void *st) {
+    DcState *s = (DcState *)st;
+    long c = s->clicks;
+    return (c > 2000000000L) ? 2000000000 : (int)c;   // saturate (won't realistically hit)
 }
 
 static void dc_block(void *st, const float *dry, int n, const float *p, float *outLR) {
@@ -494,4 +504,5 @@ const H3kAlgoDef declick_def = {
     .create  = dc_create,
     .block   = dc_block,
     .destroy = dc_destroy,
+    .meter   = dc_meter,
 };

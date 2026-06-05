@@ -82,11 +82,13 @@ void ui_draw_settings(UI *ui, SDL_Surface *s, const char *title,
                       const char **labels, const char **values, int count, int sel);
 
 // FX screen: category + algorithm name + scrollable parameter rows + optional
-// response-curve viz (vizDb[vizN], dB; NULL = none) + A/B + render.
+// response-curve viz (vizDb[vizN], dB; NULL = none) + A/B + render. `meter` (NULL =
+// none) is a big readout shown in the band area when there is no viz curve — the
+// Declicker uses it for the live click count. viz and meter are mutually exclusive.
 void ui_draw_fx(UI *ui, SDL_Surface *s, const char *category, const char *algo,
                 const char **labels, const char **values, int count, int sel, int scroll,
-                int playing, const float *vizDb, int vizN);
-int  ui_fx_visible_rows(SDL_Surface *s, int hasViz);  // param rows that fit (for scrolling)
+                int playing, const float *vizDb, int vizN, const char *meter);
+int  ui_fx_visible_rows(SDL_Surface *s, int hasBand);  // param rows that fit (for scrolling)
 
 // --- waveform editor --------------------------------------------------------
 // mn[i]/mx[i] are min/max peaks of the VISIBLE view (length = cols). in/out/cur

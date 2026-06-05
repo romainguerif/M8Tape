@@ -36,7 +36,7 @@ int main(void) {
 
     const char *hl[7] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX", "SPLICE"};
     const char *hv[7] = {"-9 CENTS", "15 MS", "+11 CENTS", "25 MS", "0%", "50%", "H910"};
-    ui_draw_fx(&ui, s, "H3000", "MICROPITCH", hl, hv, 7, 0, 0, 1, NULL, 0);
+    ui_draw_fx(&ui, s, "H3000", "MICROPITCH", hl, hv, 7, 0, 0, 1, NULL, 0, NULL);
     save(s, "out_fx.bmp");
 
     // STUDIO EQ screen: response curve + scrolling param rows (viz sanity check)
@@ -47,13 +47,19 @@ int main(void) {
     }
     const char *el[10] = {"B1 FREQ","B1 GAIN","B1 Q","B2 FREQ","B2 GAIN","B2 Q","B3 FREQ","B3 GAIN","B3 Q","B4 FREQ"};
     const char *ev[10] = {"60 HZ","+8 DB","0.70","150 HZ","-4 DB","1.20","400 HZ","0 DB","0.70","1000 HZ"};
-    ui_draw_fx(&ui, s, "STUDIO", "EQ", el, ev, 10, 4, 2, 0, eqdb, 256);
+    ui_draw_fx(&ui, s, "STUDIO", "EQ", el, ev, 10, 4, 2, 0, eqdb, 256, NULL);
     save(s, "out_fx_eq.bmp");
+
+    // STUDIO DECLICKER screen: live click-count band (meter sanity check)
+    const char *dl[4] = {"SENSITIVITY","MAX SIZE","STRENGTH","LOOK-AHEAD"};
+    const char *dv[4] = {"50%","1.5 MS","100%","3.0 MS"};
+    ui_draw_fx(&ui, s, "STUDIO", "DECLICKER", dl, dv, 4, 0, 0, 1, NULL, 0, "42");
+    save(s, "out_fx_declick.bmp");
 
     const char *fxnames[] = {"MICROPITCH", "DUAL SHIFT", "DIATONIC", "ULTRA-TAP",
                              "DUAL DELAY", "BAND DELAY", "REVERB", "REVERSE",
                              "PHASER", "STUTTER", "STRING", "VOCODER"};
-    ui_draw_menu(&ui, s, "H3000 FX", fxnames, 12, 1, 0);
+    ui_draw_menu(&ui, s, "FX", fxnames, 12, 1, 0);
     save(s, "out_fxpick.bmp");
 
     ui_draw_keyboard(&ui, s, "NAME SAMPLE", "rain_forest", 0, 1, 3);

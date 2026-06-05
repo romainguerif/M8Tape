@@ -363,7 +363,7 @@ int ui_fx_visible_rows(SDL_Surface *s, int hasViz) {
 
 void ui_draw_fx(UI *ui, SDL_Surface *s, const char *category, const char *algo,
                 const char **labels, const char **values, int count, int sel, int scroll,
-                int playing, const float *vizDb, int vizN) {
+                int playing, const float *vizDb, int vizN, const char *meter) {
     fillc(s, 0, 0, s->w, s->h, C_BG);
     draw_label(s, ui->label, category ? category : "FX", C_GREY, MARGIN, 30, 3);
     int aw = draw_text(s, ui->h1, algo ? algo : "", C_WHITE, MARGIN + 180, 22);
@@ -374,6 +374,7 @@ void ui_draw_fx(UI *ui, SDL_Surface *s, const char *category, const char *algo,
     fillc(s, MARGIN, 96, s->w - 2 * MARGIN, 2, C_HAIR);
 
     int hasViz = (vizDb && vizN > 1);
+    int hasBand = hasViz || (meter != NULL);
     if (hasViz) {                                   // EQ-style response curve
         int vx = MARGIN, vy = FX_VIZ_Y, vw = s->w - 2 * MARGIN, vh = FX_VIZ_H;
         fillc(s, vx, vy, vw, vh, C_PANEL);
@@ -391,10 +392,15 @@ void ui_draw_fx(UI *ui, SDL_Surface *s, const char *category, const char *algo,
             fillc(s, vx + x, y0, 2, y1 - y0 + 2, C_AMBER);
             prevY = y;
         }
+    } else if (meter) {                             // big live readout (Declicker count)
+        int vx = MARGIN, vy = FX_VIZ_Y, vw = s->w - 2 * MARGIN, vh = FX_VIZ_H;
+        fillc(s, vx, vy, vw, vh, C_PANEL);
+        draw_label(s, ui->label, "CLICKS DETECTED", C_GREY, vx + 24, vy + 22, 3);
+        draw_text_c(s, ui->seg_big, meter, C_AMBER, s->w / 2, vy + vh / 2 - 22);
     }
 
-    int top = fx_params_top(hasViz);
-    int vis = ui_fx_visible_rows(s, hasViz);
+    int top = fx_params_top(hasBand);
+    int vis = ui_fx_visible_rows(s, hasBand);
     if (scroll < 0) scroll = 0;
     if (scroll > count - vis) scroll = (count - vis > 0) ? count - vis : 0;
     for (int r = 0; r < vis && scroll + r < count; r++) {

@@ -81,6 +81,12 @@ typedef struct {
     // CRUSH (base-rate decimator) running state.
     float  crush_hold;     // last emitted (sample-and-held) value
     float  crush_phase;    // fractional sample-rate-reduction accumulator
+
+    // Wet-path DC blocker (one-pole high-pass ~8 Hz). Real tube/tape gear is
+    // AC-coupled; asymmetric shapers (TUBE bias, signal-dependent even harmonics)
+    // legitimately produce DC that we must not pass into the mix / output.
+    float  dc_x1, dc_y1;   // high-pass state: y = x - x1 + R*y1
+    float  dc_R;           // pole radius (set from rate in dr_create)
 } DriveState;
 
 // ------------------------------------------------------------------ shapers ---
@@ -121,9 +127,12 @@ static inline float sh_tape(float x) {
 // "edge"), with a touch of asymmetry for grit. tanh with a higher internal gain
 // gives the firmer knee; the cubic-ish bias adds slight even content.
 static inline float sh_transistor(float x) {
-    float y = tanhf(x);
-    // a small squared term tilts the curve -> mild even harmonics / asymmetry.
-    y += 0.06f * (tanhf(x) * tanhf(x) - 0.5f);
+    // Firm solid-state knee: tanh at a higher internal gain than TAPE (clips ~sooner,
+    // harder "edge"). A small input bias b adds even-harmonic asymmetry/grit; the
+    // -tanh(b) recentres so the curve maps 0 -> 0 (the previous form left a constant
+    // -0.03 offset at the origin -> a DC bias on the wet signal: now fixed).
+    const float b = 0.10f;
+    float y = tanhf(1.5f * x + b) - tanhf(b);
     if (y >  1.0f) y =  1.0f;
     if (y < -1.0f) y = -1.0f;
     return y;
@@ -176,6 +185,11 @@ static void *dr_create(int rate) {
     bq_lowpass(&s->up1, cut, BW_Q1, s->osrate);
     bq_lowpass(&s->dn0, cut, BW_Q0, s->osrate);
     bq_lowpass(&s->dn1, cut, BW_Q1, s->osrate);
+
+    // DC blocker pole for ~8 Hz at the base rate: R = 1 - 2*pi*fc/fs.
+    s->dc_R = 1.0f - (6.2831853f * 8.0f / (float)s->rate);
+    if (s->dc_R < 0.0f)   s->dc_R = 0.0f;
+    if (s->dc_R > 0.9999f) s->dc_R = 0.9999f;
 
     return s;
 }
@@ -268,6 +282,12 @@ static void dr_block(void *st, const float *dry, int n, const float *p, float *o
 
         // Post TONE low-pass on the wet path only (Butterworth, base rate).
         wet = bq_process(&s->tone1, bq_process(&s->tone0, wet));
+
+        // DC blocker on the wet path (AC-couple): remove any offset the asymmetric
+        // shapers introduce before it reaches the mix.
+        float hp = wet - s->dc_x1 + s->dc_R * s->dc_y1;
+        s->dc_x1 = wet; s->dc_y1 = hp;
+        wet = scrub(hp);
 
         // Dry/wet mix, then output trim.
         float o = (mix * wet + (1.0f - mix) * in) * outgain;

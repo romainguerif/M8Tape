@@ -596,6 +596,7 @@ typedef struct {
     float params[H3K_MAX_PARAMS];   // updated live by the UI
     int frames;
     int rate;
+    volatile int meter;             // child -> UI: live meter (Declicker click count); -1 = none
     // mono source floats follow immediately after this struct in the mapping
 } PvShared;
 
@@ -636,8 +637,10 @@ static void pv_child(PvShared *shm) {
     if (xf > shm->frames / 4) xf = shm->frames / 4;
     if (xf < 1) xf = 1;
     long loopL = shm->frames - xf; if (loopL < 1) loopL = 1;
+    long meter_base = 0;                           // click count at the start of this loop pass
     while (!shm->stop) {
         if (getppid() == 1) break;                 // parent gone → don't orphan
+        int wrapped = 0;
         for (int i = 0; i < BLK; i++) {
             float smp;
             if (pos < xf) {                        // crossfade head-in with tail-out
@@ -647,11 +650,18 @@ static void pv_child(PvShared *shm) {
                 smp = src[pos];
             }
             dry[i] = smp;
-            if (++pos >= loopL) pos = 0;
+            if (++pos >= loopL) { pos = 0; wrapped = 1; }
         }
         float p[H3K_MAX_PARAMS];
         for (int k = 0; k < H3K_MAX_PARAMS; k++) p[k] = shm->params[k];   // live snapshot
         h3k_block(st, dry, BLK, p, out);
+        // Live meter (Declicker): show clicks found in the CURRENT loop pass — counts
+        // up in real time and peaks at the per-sample total right at the loop wrap.
+        int mv = h3k_meter(st);
+        if (mv >= 0) {
+            shm->meter = mv - (int)meter_base;
+            if (wrapped) meter_base = mv;          // start the next pass fresh
+        }
         for (int i = 0; i < BLK * 2; i++) {
             float v = out[i]; if (v > 1) v = 1; if (v < -1) v = -1;
             s16[i] = (short)(v * 32767);
@@ -702,6 +712,7 @@ static void preview_start(const Audio *a, int algo, const float *params) {
     shm->stop = 0; shm->frames = (int)F;
     shm->rate = a->rate > 0 ? a->rate : 48000;
     shm->algo = algo;
+    shm->meter = -1;
     for (int k = 0; k < H3K_MAX_PARAMS; k++) shm->params[k] = params[k];
     float *src = (float *)((char *)shm + sizeof(PvShared));
     for (long i = 0; i < F; i++) {
@@ -788,7 +799,7 @@ int main(int argc, char *argv[]) {
     char move_from[1024] = {0}, move_name[256] = {0};
 
     // editor ops menu
-    static const char *EMENU[] = {"H3000 FX", "NORMALIZE", "GAIN +1 DB", "GAIN -1 DB",
+    static const char *EMENU[] = {"FX", "NORMALIZE", "GAIN +1 DB", "GAIN -1 DB",
         "FADE IN", "FADE OUT", "LOOP XFADE", "REVERSE", "HIGH-PASS",
         "TRIM TO SELECTION", "TRIM SILENCE", "TO MONO", "16-BIT", "HALF RATE",
         "SAVE", "SAVE AS", "EXIT"};
@@ -799,6 +810,7 @@ int main(int argc, char *argv[]) {
     int lvlctr = 0, set_sel = 0;
     time_t last_sound = 0;
     int edit_accel = 0;   // editor cursor acceleration (frames held)
+    int fx_accel = 0;     // FX param value-change acceleration (frames held)
 
     // H3000 FX: current algorithm + its live params + cursors
     int   fx_algo = 0;
@@ -1022,7 +1034,7 @@ int main(int argc, char *argv[]) {
             if (PAD_justPressed(BTN_A)) {
                 const char *op = EMENU[emenu_sel];
                 int back = 1;
-                if (!strcmp(op, "H3000 FX")) { fx_incat = -1; fx_pick_sel = 0; fx_pick_scroll = 0; stop_play(); mode = M_FX_PICK; back = -1; }
+                if (!strcmp(op, "FX")) { fx_incat = -1; fx_pick_sel = 0; fx_pick_scroll = 0; stop_play(); mode = M_FX_PICK; back = -1; }
                 else if (!strcmp(op, "NORMALIZE")) au_normalize(&g_au);
                 else if (!strcmp(op, "GAIN +1 DB")) au_gain_db(&g_au, g_in, g_out, 1.0f);
                 else if (!strcmp(op, "GAIN -1 DB")) au_gain_db(&g_au, g_in, g_out, -1.0f);
@@ -1087,11 +1099,33 @@ int main(int argc, char *argv[]) {
             }
             if (NAV(BTN_UP))   { if (h_sel > 0) h_sel--; }
             if (NAV(BTN_DOWN)) { if (h_sel < def->nparams - 1) h_sel++; }
-            int hvis = ui_fx_visible_rows(screen, def->response != NULL);  // keep sel in view
+            int hvis = ui_fx_visible_rows(screen, def->response != NULL || def->meter != NULL);  // keep sel in view
             if (h_sel < h_scroll) h_scroll = h_sel;
             if (h_sel >= h_scroll + hvis) h_scroll = h_sel - hvis + 1;
-            int dl = NAV(BTN_RIGHT) ? 1 : NAV(BTN_LEFT) ? -1 : 0;
-            if (dl) fx_params[h_sel] = h3k_adjust(&def->params[h_sel], fx_params[h_sel], dl);
+            // Value change with hold-to-accelerate (same feel as the editor cursor):
+            // a tap nudges exactly one step; holding past ~0.25 s ramps up the steps
+            // per frame so wide ranges (EQ freq, gains) sweep fast. CHOICE params stay
+            // discrete (one step per key-repeat, no acceleration).
+            const ParamSpec *ps = &def->params[h_sel];
+            int held = PAD_isPressed(BTN_RIGHT) ? 1 : PAD_isPressed(BTN_LEFT) ? -1 : 0;
+            if (PAD_justPressed(BTN_RIGHT) || PAD_justPressed(BTN_LEFT)) {
+                fx_params[h_sel] = h3k_adjust(ps, fx_params[h_sel], held);   // fine tap
+                fx_accel = 0;
+            } else if (held && ps->kind == PK_CHOICE) {
+                if (PAD_justRepeated(BTN_RIGHT) || PAD_justRepeated(BTN_LEFT))
+                    fx_params[h_sel] = h3k_adjust(ps, fx_params[h_sel], held);
+                fx_accel = 0;
+            } else if (held) {
+                fx_accel++;
+                if (fx_accel > 14) {                       // after ~0.25 s, auto-repeat + ramp
+                    int reps = 1 + (fx_accel - 14) / 7;
+                    if (reps > 24) reps = 24;              // cap steps/frame
+                    for (int r = 0; r < reps; r++)
+                        fx_params[h_sel] = h3k_adjust(ps, fx_params[h_sel], held);
+                }
+            } else {
+                fx_accel = 0;
+            }
             if (g_pv_active && g_pv_shm)                  // live: tweak heard now
                 for (int k = 0; k < H3K_MAX_PARAMS; k++) g_pv_shm->params[k] = fx_params[k];
             if (PAD_justPressed(BTN_A)) {                 // toggle real-time looped preview
@@ -1237,8 +1271,16 @@ int main(int argc, char *argv[]) {
                 if (def->response && def->response(fx_params, g_au.rate > 0 ? g_au.rate : 48000, vizDb, 256)) {
                     viz = vizDb; vizN = 256;
                 }
+                // Live meter band (Declicker): show the running click count while
+                // previewing, or "0" when stopped (the count comes from the child).
+                char meterbuf[24]; const char *meter = NULL;
+                if (def->meter) {
+                    int mv = (g_pv_active && g_pv_shm && g_pv_shm->meter > 0) ? g_pv_shm->meter : 0;
+                    snprintf(meterbuf, sizeof(meterbuf), "%d", mv);
+                    meter = meterbuf;
+                }
                 ui_draw_fx(&ui, screen, h3k_category(fx_algo), def->name, hl, hv,
-                           def->nparams, h_sel, h_scroll, g_pv_active, viz, vizN);
+                           def->nparams, h_sel, h_scroll, g_pv_active, viz, vizN, meter);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }

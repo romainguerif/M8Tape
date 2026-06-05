@@ -49,6 +49,10 @@ typedef struct {
     // (stateless — runs in the UI process). Return 1 if filled, 0/NULL = no viz
     // (the FX screen then just shows the parameter rows). Used by the EQ curve.
     int   (*response)(const float *p, int rate, float *outDb, int n);
+    // OPTIONAL live meter: return a scalar reading from the RUNNING state (read by
+    // the preview child each block for an on-screen readout). DECLICKER returns the
+    // cumulative count of clicks repaired so far. NULL hook / negative return = none.
+    int   (*meter)(void *st);
 } H3kAlgoDef;
 
 // Category of algo `i` ("H3000" if the def left it NULL).
@@ -62,6 +66,7 @@ extern const int h3k_algo_count;
 typedef struct H3kEngine H3kEngine;
 H3kEngine *h3k_create(int algo, int rate);
 void       h3k_block(H3kEngine *e, const float *dry, int n, const float *params, float *outLR);
+int        h3k_meter(H3kEngine *e);   // live meter from the running algo, or -1 if none
 void       h3k_destroy(H3kEngine *e);
 
 // --- whole-sample destructive render (file -> file). Result is stereo --------

@@ -67,6 +67,10 @@ H3kEngine *h3k_create(int algo, int rate) {
 void h3k_block(H3kEngine *e, const float *dry, int n, const float *params, float *outLR) {
     e->def->block(e->st, dry, n, params, outLR);
 }
+int h3k_meter(H3kEngine *e) {
+    if (!e || !e->def || !e->def->meter || !e->st) return -1;
+    return e->def->meter(e->st);
+}
 void h3k_destroy(H3kEngine *e) {
     if (!e) return;
     if (e->def && e->st) e->def->destroy(e->st);
