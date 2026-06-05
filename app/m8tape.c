@@ -172,13 +172,40 @@ static void remount(const char *opt) {
 static const char *g_out_dir = ".";       // pak dir (logs, screenshot)
 static char g_lib[512];                    // <SDCARD>/M8Tape
 static char g_sd[512];                     // <SDCARD> mount root — browse/move/folders span the whole card (e.g. to the LGPT folder)
+static char g_lgpt[1024];                  // LGPT/Piggy data dir (under the hidden .ports/) — direct-jump target, empty if not found
 static char g_tmp[600];                    // raw take staged here before naming
 static char g_tmpplay[640];                // selection audition temp
+
+static int dir_exists(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+// Locate the LGPT/Piggy data dir. It lives under PortMaster's HIDDEN .ports/, so
+// the browser (which hides dotdirs) can't reach it by navigating — hence a direct
+// jump. Prefer the user's custom "dev" build + its samplelib.
+static void detect_lgpt(void) {
+    g_lgpt[0] = '\0';
+    static const char *const roots[] = {
+        "Roms/Ports (PORTS)/.ports", "Roms/PORTS/.ports", "Roms/ports/.ports", "Ports/.ports", 0 };
+    static const char *const subs[] = {
+        "littlegptracker-dev/samplelib", "littlegptracker-dev",
+        "littlegptracker/samplelib", "littlegptracker", 0 };
+    char p[1024];
+    for (int r = 0; roots[r]; r++) {
+        for (int s = 0; subs[s]; s++) {
+            snprintf(p, sizeof(p), "%s/%s/%s", g_sd, roots[r], subs[s]);
+            if (dir_exists(p)) { snprintf(g_lgpt, sizeof(g_lgpt), "%s", p); return; }
+        }
+        snprintf(p, sizeof(p), "%s/%s", g_sd, roots[r]);
+        if (dir_exists(p)) { snprintf(g_lgpt, sizeof(g_lgpt), "%s", p); return; }
+    }
+}
 
 static void setup_library(void) {
     char mp[256];
     sdcard_mount(mp, sizeof(mp));
     snprintf(g_sd, sizeof(g_sd), "%s", mp);
+    detect_lgpt();
     snprintf(g_lib, sizeof(g_lib), "%s/M8Tape", mp);
     mkdir(g_lib, 0777);
     char uns[600];
@@ -730,6 +757,7 @@ int main(int argc, char *argv[]) {
                 else { if (g_play_sel == g_bsel) stop_play(); else start_play(g_bsel); }
             }
             if (PAD_justPressed(BTN_B)) { if (at_sd_root()) { stop_play(); mode = M_HOME; redraw = 1; } else go_up(); }
+            if (PAD_justPressed(BTN_SELECT) && g_lgpt[0]) { stop_play(); snprintf(g_cur, sizeof(g_cur), "%s", g_lgpt); g_bsel = 0; g_bscroll = 0; list_dir(); }
             if (PAD_justPressed(BTN_X)) { name[0] = '\0'; name_purpose = NP_NEWFOLDER; caps = 0; krow = 1; kcol = 0; mode = M_NAME; }
             if (PAD_justPressed(BTN_Y) && g_nent > 0) {
                 menu_n = 0;
@@ -796,6 +824,7 @@ int main(int argc, char *argv[]) {
                 if (at_sd_root()) { snprintf(g_cur, sizeof(g_cur), "%s", move_from); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; }
                 else go_up();
             }
+            if (PAD_justPressed(BTN_SELECT) && g_lgpt[0]) { snprintf(g_cur, sizeof(g_cur), "%s", g_lgpt); g_bsel = 0; g_bscroll = 0; list_dir(); }
             if (PAD_justPressed(BTN_START) || PAD_justPressed(BTN_Y)) {
                 char src[1300], dst[1400];
                 snprintf(src, sizeof(src), "%s/%s", move_from, move_name);
@@ -980,10 +1009,10 @@ int main(int argc, char *argv[]) {
                 if (mode == M_MOVE) {
                     char mc[770]; snprintf(mc, sizeof(mc), "MOVE TO  %s", crumb);
                     ui_draw_browser(&ui, screen, mc, names, isd, g_nent, g_bsel, g_bscroll, -1,
-                                    "START HERE   A OPEN   B BACK");
+                                    "START HERE  SEL LGPT  A OPEN  B BACK");
                 } else {
                     ui_draw_browser(&ui, screen, crumb, names, isd, g_nent, g_bsel, g_bscroll, g_play_sel,
-                                    "A OPEN/PLAY  Y ACTIONS  X NEW FOLDER  B BACK");
+                                    "A OPEN  Y MENU  X FOLDER  SEL LGPT  B BACK");
                 }
             } else if (mode == M_MENU) {
                 ui_draw_menu(&ui, screen, "ACTIONS", menu_opts, menu_n, menu_sel, menu_scroll);
