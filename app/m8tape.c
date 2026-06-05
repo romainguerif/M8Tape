@@ -171,12 +171,14 @@ static void remount(const char *opt) {
 // --- library ----------------------------------------------------------------
 static const char *g_out_dir = ".";       // pak dir (logs, screenshot)
 static char g_lib[512];                    // <SDCARD>/M8Tape
+static char g_sd[512];                     // <SDCARD> mount root — browse/move/folders span the whole card (e.g. to the LGPT folder)
 static char g_tmp[600];                    // raw take staged here before naming
 static char g_tmpplay[640];                // selection audition temp
 
 static void setup_library(void) {
     char mp[256];
     sdcard_mount(mp, sizeof(mp));
+    snprintf(g_sd, sizeof(g_sd), "%s", mp);
     snprintf(g_lib, sizeof(g_lib), "%s/M8Tape", mp);
     mkdir(g_lib, 0777);
     char uns[600];
@@ -385,11 +387,16 @@ static void list_dir(void) {
 }
 
 static void crumb_of(char *out, int cap) {
+    size_t ls = strlen(g_lib), ss = strlen(g_sd);
     if (strcmp(g_cur, g_lib) == 0) snprintf(out, cap, "M8TAPE");
-    else snprintf(out, cap, "M8TAPE%s", g_cur + strlen(g_lib));
+    else if (strncmp(g_cur, g_lib, ls) == 0 && g_cur[ls] == '/') snprintf(out, cap, "M8TAPE%s", g_cur + ls);
+    else if (strcmp(g_cur, g_sd) == 0) snprintf(out, cap, "SD");
+    else if (strncmp(g_cur, g_sd, ss) == 0 && g_cur[ss] == '/') snprintf(out, cap, "SD%s", g_cur + ss);
+    else snprintf(out, cap, "%s", g_cur);
 }
 
-static int at_lib_root(void) { return strcmp(g_cur, g_lib) == 0; }
+// true at the SD-card root — the top of navigation now (was the M8Tape root)
+static int at_sd_root(void) { return strcmp(g_cur, g_sd) == 0; }
 
 static void reap_play(void) {
     if (g_play_pid > 0) {
@@ -430,7 +437,7 @@ static void go_up(void) {
     stop_play();
     char *slash = strrchr(g_cur, '/');
     if (slash && slash > g_cur) *slash = '\0';
-    if (strlen(g_cur) < strlen(g_lib)) snprintf(g_cur, sizeof(g_cur), "%s", g_lib);
+    if (strlen(g_cur) < strlen(g_sd)) snprintf(g_cur, sizeof(g_cur), "%s", g_sd);
     g_bsel = 0; g_bscroll = 0; list_dir();
 }
 
@@ -722,7 +729,7 @@ int main(int argc, char *argv[]) {
                 if (g_ents[g_bsel].is_dir) enter_dir(g_ents[g_bsel].name);
                 else { if (g_play_sel == g_bsel) stop_play(); else start_play(g_bsel); }
             }
-            if (PAD_justPressed(BTN_B)) { if (at_lib_root()) { stop_play(); mode = M_HOME; redraw = 1; } else go_up(); }
+            if (PAD_justPressed(BTN_B)) { if (at_sd_root()) { stop_play(); mode = M_HOME; redraw = 1; } else go_up(); }
             if (PAD_justPressed(BTN_X)) { name[0] = '\0'; name_purpose = NP_NEWFOLDER; caps = 0; krow = 1; kcol = 0; mode = M_NAME; }
             if (PAD_justPressed(BTN_Y) && g_nent > 0) {
                 menu_n = 0;
@@ -786,14 +793,14 @@ int main(int argc, char *argv[]) {
             if (g_bsel >= g_bscroll + vis) g_bscroll = g_bsel - vis + 1;
             if (PAD_justPressed(BTN_A) && g_nent > 0 && g_ents[g_bsel].is_dir) enter_dir(g_ents[g_bsel].name);
             if (PAD_justPressed(BTN_B)) {
-                if (at_lib_root()) { snprintf(g_cur, sizeof(g_cur), "%s", move_from); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; }
+                if (at_sd_root()) { snprintf(g_cur, sizeof(g_cur), "%s", move_from); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; }
                 else go_up();
             }
             if (PAD_justPressed(BTN_START) || PAD_justPressed(BTN_Y)) {
                 char src[1300], dst[1400];
                 snprintf(src, sizeof(src), "%s/%s", move_from, move_name);
                 snprintf(dst, sizeof(dst), "%s/%s", g_cur, move_name);
-                if (strcmp(src, dst) != 0) rename(src, dst);
+                if (strcmp(src, dst) != 0) { rename(src, dst); sync(); }  // flush so LGPT sees the moved sample
                 snprintf(g_cur, sizeof(g_cur), "%s", move_from);
                 g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE;
             }
