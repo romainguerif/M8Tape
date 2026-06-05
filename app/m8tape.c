@@ -32,6 +32,7 @@
 #include "wav.h"
 #include "player.h"
 #include "h3000.h"
+#include "led.h"
 
 // --- detected input ---------------------------------------------------------
 struct Input {
@@ -914,6 +915,7 @@ int main(int argc, char *argv[]) {
             if (stop_now) {
                 rec_channels = in.channels;
                 stop_rec(&rec);
+                led_record_stop();             // restore the user's LED look
                 time_t now = time(NULL); struct tm *tm = localtime(&now);
                 strftime(name, sizeof(name), "rec_%H%M%S", tm);
                 name_purpose = NP_REC; caps = 0; krow = 1; kcol = 0;
@@ -1243,7 +1245,7 @@ int main(int argc, char *argv[]) {
             if (PAD_justPressed(BTN_B)) { save_settings(); mode = M_HOME; redraw = 1; }
             redraw = 1;
         } else { // M_HOME
-            if (PAD_justPressed(BTN_A) && in.present) { if (start_rec(&rec, &in)) { g_levelL = 0; g_levelR = 0; lvlctr = 0; last_sound = time(NULL); mode = M_REC; } }
+            if (PAD_justPressed(BTN_A) && in.present) { if (start_rec(&rec, &in)) { g_levelL = 0; g_levelR = 0; lvlctr = 0; last_sound = time(NULL); led_record_start(); mode = M_REC; } }
             if (PAD_justPressed(BTN_X)) { g_cur[0] = '\0'; g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; redraw = 1; }
             if (PAD_justPressed(BTN_SELECT)) { set_sel = 0; mode = M_SETTINGS; redraw = 1; }
             // quit on a fresh B press (justReleased here would catch the release
@@ -1374,6 +1376,7 @@ int main(int argc, char *argv[]) {
     preview_stop();
     stop_play();
     if (rec.active) stop_rec(&rec);
+    led_record_stop();                 // restore LEDs if we ever exit mid-record
     ui_free(&ui);
     QuitSettings();
     PWR_quit();
