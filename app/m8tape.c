@@ -416,6 +416,14 @@ static int ent_cmp(const void *a, const void *b) {
 
 static void list_dir(void) {
     g_nent = 0;
+    if (g_cur[0] == '\0') {                 // PLACES root (virtual): the shortcut folders
+        snprintf(g_ents[g_nent].name, sizeof(g_ents[0].name), "M8TAPE");  g_ents[g_nent++].is_dir = 1;
+        if (g_lgpt[0]) { snprintf(g_ents[g_nent].name, sizeof(g_ents[0].name), "LGPT"); g_ents[g_nent++].is_dir = 1; }
+        snprintf(g_ents[g_nent].name, sizeof(g_ents[0].name), "SD CARD"); g_ents[g_nent++].is_dir = 1;
+        if (g_bsel >= g_nent) g_bsel = g_nent - 1;
+        if (g_bsel < 0) g_bsel = 0;
+        return;                              // no sort -> keep M8TAPE / LGPT / SD CARD order
+    }
     DIR *d = opendir(g_cur);
     if (d) {
         struct dirent *e;
@@ -442,15 +450,16 @@ static void list_dir(void) {
 
 static void crumb_of(char *out, int cap) {
     size_t ls = strlen(g_lib), ss = strlen(g_sd);
-    if (strcmp(g_cur, g_lib) == 0) snprintf(out, cap, "M8TAPE");
+    if (g_cur[0] == '\0') snprintf(out, cap, "PLACES");
+    else if (strcmp(g_cur, g_lib) == 0) snprintf(out, cap, "M8TAPE");
     else if (strncmp(g_cur, g_lib, ls) == 0 && g_cur[ls] == '/') snprintf(out, cap, "M8TAPE%s", g_cur + ls);
     else if (strcmp(g_cur, g_sd) == 0) snprintf(out, cap, "SD");
     else if (strncmp(g_cur, g_sd, ss) == 0 && g_cur[ss] == '/') snprintf(out, cap, "SD%s", g_cur + ss);
     else snprintf(out, cap, "%s", g_cur);
 }
 
-// true at the SD-card root — the top of navigation now (was the M8Tape root)
-static int at_sd_root(void) { return strcmp(g_cur, g_sd) == 0; }
+// true at the virtual PLACES root (the top of navigation: M8TAPE / LGPT / SD CARD)
+static int at_places(void) { return g_cur[0] == '\0'; }
 
 static void reap_play(void) {
     if (g_play_pid > 0) {
@@ -482,16 +491,28 @@ static void start_play(int idx) {
 
 static void enter_dir(const char *name) {
     stop_play();
-    char nc[1024];
-    snprintf(nc, sizeof(nc), "%s/%s", g_cur, name);
-    snprintf(g_cur, sizeof(g_cur), "%s", nc);
+    if (g_cur[0] == '\0') {                            // PLACES root -> jump into a place
+        if      (!strcmp(name, "M8TAPE"))  snprintf(g_cur, sizeof(g_cur), "%s", g_lib);
+        else if (!strcmp(name, "LGPT"))    snprintf(g_cur, sizeof(g_cur), "%s", g_lgpt);
+        else if (!strcmp(name, "SD CARD")) snprintf(g_cur, sizeof(g_cur), "%s", g_sd);
+        else return;
+    } else {
+        char nc[1024];
+        snprintf(nc, sizeof(nc), "%s/%s", g_cur, name);
+        snprintf(g_cur, sizeof(g_cur), "%s", nc);
+    }
     g_bsel = 0; g_bscroll = 0; list_dir();
 }
 static void go_up(void) {
     stop_play();
-    char *slash = strrchr(g_cur, '/');
-    if (slash && slash > g_cur) *slash = '\0';
-    if (strlen(g_cur) < strlen(g_sd)) snprintf(g_cur, sizeof(g_cur), "%s", g_sd);
+    // at a place's base (M8Tape / LGPT / SD root) -> back to the PLACES root
+    if (!strcmp(g_cur, g_lib) || (g_lgpt[0] && !strcmp(g_cur, g_lgpt)) || !strcmp(g_cur, g_sd)) {
+        g_cur[0] = '\0';
+    } else {
+        char *slash = strrchr(g_cur, '/');
+        if (slash && slash > g_cur) *slash = '\0';
+        if (strlen(g_cur) < strlen(g_sd)) snprintf(g_cur, sizeof(g_cur), "%s", g_sd);
+    }
     g_bsel = 0; g_bscroll = 0; list_dir();
 }
 
@@ -786,10 +807,9 @@ int main(int argc, char *argv[]) {
                 if (g_ents[g_bsel].is_dir) enter_dir(g_ents[g_bsel].name);
                 else { if (g_play_sel == g_bsel) stop_play(); else start_play(g_bsel); }
             }
-            if (PAD_justPressed(BTN_B)) { if (at_sd_root()) { stop_play(); mode = M_HOME; redraw = 1; } else go_up(); }
-            if (PAD_justPressed(BTN_SELECT) && g_lgpt[0]) { stop_play(); snprintf(g_cur, sizeof(g_cur), "%s", g_lgpt); g_bsel = 0; g_bscroll = 0; list_dir(); }
-            if (PAD_justPressed(BTN_X)) { name[0] = '\0'; name_purpose = NP_NEWFOLDER; caps = 0; krow = 1; kcol = 0; mode = M_NAME; }
-            if (PAD_justPressed(BTN_Y) && g_nent > 0) {
+            if (PAD_justPressed(BTN_B)) { if (at_places()) { stop_play(); mode = M_HOME; redraw = 1; } else go_up(); }
+            if (PAD_justPressed(BTN_X) && g_cur[0]) { name[0] = '\0'; name_purpose = NP_NEWFOLDER; caps = 0; krow = 1; kcol = 0; mode = M_NAME; }
+            if (PAD_justPressed(BTN_Y) && g_nent > 0 && g_cur[0]) {
                 menu_n = 0;
                 if (g_ents[g_bsel].is_dir) menu_opts[menu_n++] = "OPEN";
                 else { menu_opts[menu_n++] = "PLAY"; menu_opts[menu_n++] = "EDIT"; }
@@ -828,7 +848,7 @@ int main(int argc, char *argv[]) {
                     snprintf(move_from, sizeof(move_from), "%s", g_cur);
                     snprintf(move_name, sizeof(move_name), "%s", g_ents[g_bsel].name);
                     stop_play();
-                    snprintf(g_cur, sizeof(g_cur), "%s", g_lib);
+                    g_cur[0] = '\0';                               // move picker starts at PLACES
                     g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_MOVE;
                 } else if (!strcmp(op, "DELETE")) mode = M_CONFIRM;
             }
@@ -851,11 +871,10 @@ int main(int argc, char *argv[]) {
             if (g_bsel >= g_bscroll + vis) g_bscroll = g_bsel - vis + 1;
             if (PAD_justPressed(BTN_A) && g_nent > 0 && g_ents[g_bsel].is_dir) enter_dir(g_ents[g_bsel].name);
             if (PAD_justPressed(BTN_B)) {
-                if (at_sd_root()) { snprintf(g_cur, sizeof(g_cur), "%s", move_from); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; }
+                if (at_places()) { snprintf(g_cur, sizeof(g_cur), "%s", move_from); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; }
                 else go_up();
             }
-            if (PAD_justPressed(BTN_SELECT) && g_lgpt[0]) { snprintf(g_cur, sizeof(g_cur), "%s", g_lgpt); g_bsel = 0; g_bscroll = 0; list_dir(); }
-            if (PAD_justPressed(BTN_START) || PAD_justPressed(BTN_Y)) {
+            if ((PAD_justPressed(BTN_START) || PAD_justPressed(BTN_Y)) && g_cur[0]) {
                 char src[1300], dst[1400];
                 snprintf(src, sizeof(src), "%s/%s", move_from, move_name);
                 snprintf(dst, sizeof(dst), "%s/%s", g_cur, move_name);
@@ -1007,7 +1026,7 @@ int main(int argc, char *argv[]) {
             redraw = 1;
         } else { // M_HOME
             if (PAD_justPressed(BTN_A) && in.present) { if (start_rec(&rec, &in)) { g_levelL = 0; g_levelR = 0; lvlctr = 0; last_sound = time(NULL); mode = M_REC; } }
-            if (PAD_justPressed(BTN_X)) { snprintf(g_cur, sizeof(g_cur), "%s", g_lib); g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; redraw = 1; }
+            if (PAD_justPressed(BTN_X)) { g_cur[0] = '\0'; g_bsel = 0; g_bscroll = 0; list_dir(); mode = M_BROWSE; redraw = 1; }
             if (PAD_justPressed(BTN_SELECT)) { set_sel = 0; mode = M_SETTINGS; redraw = 1; }
             // quit on a fresh B press (justReleased here would catch the release
             // of a B used to leave Settings/Library → app would quit by mistake)
@@ -1039,10 +1058,10 @@ int main(int argc, char *argv[]) {
                 if (mode == M_MOVE) {
                     char mc[770]; snprintf(mc, sizeof(mc), "MOVE TO  %s", crumb);
                     ui_draw_browser(&ui, screen, mc, names, isd, g_nent, g_bsel, g_bscroll, -1,
-                                    "START HERE  SEL LGPT  A OPEN  B BACK");
+                                    "START HERE   A OPEN   B BACK");
                 } else {
                     ui_draw_browser(&ui, screen, crumb, names, isd, g_nent, g_bsel, g_bscroll, g_play_sel,
-                                    "A OPEN  Y MENU  X FOLDER  SEL LGPT  B BACK");
+                                    "A OPEN  Y MENU  X NEW FOLDER  B BACK");
                 }
             } else if (mode == M_MENU) {
                 ui_draw_menu(&ui, screen, "ACTIONS", menu_opts, menu_n, menu_sel, menu_scroll);

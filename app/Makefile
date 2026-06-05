@@ -10,6 +10,10 @@ PREFIX = $(CURRENT_WORKING_DIR)/platform/$(PLATFORM)
 
 -include minui/workspace/$(PLATFORM)/platform/makefile.env
 SDL?=SDL
+# NOTE: keep -flto (from minui's makefile.env). It's not just perf — without it
+# this aarch64 cross-gcc 8.3.0 miscompiles under -Ofast (emits ARM32 movcs/rrx
+# mnemonics → assembler errors). -flto changes the codegen path and avoids it.
+# Downside: lto-wrapper ICEs intermittently → build.sh is re-run on failure.
 
 TARGET = m8tape
 PRODUCT = $(TARGET)
