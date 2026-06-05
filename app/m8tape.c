@@ -483,9 +483,27 @@ static void pv_child(PvShared *shm) {
     float dry[BLK], out[BLK * 2];
     short s16[BLK * 2];
     long pos = 0, xruns = 0, blocks = 0;
+    // Seamless preview loop: play a loop of length loopL = frames - xf, and
+    // equal-power crossfade the HEAD (fading in) with the TAIL (fading out) over
+    // the first xf samples. The wrap then joins adjacent samples (loopL-1 -> loopL)
+    // and the crossfade smooths head/tail, so there is no per-loop seam click.
+    long xf = (long)(0.020 * (double)shm->rate);
+    if (xf > shm->frames / 4) xf = shm->frames / 4;
+    if (xf < 1) xf = 1;
+    long loopL = shm->frames - xf; if (loopL < 1) loopL = 1;
     while (!shm->stop) {
         if (getppid() == 1) break;                 // parent gone → don't orphan
-        for (int i = 0; i < BLK; i++) { dry[i] = src[pos]; if (++pos >= shm->frames) pos = 0; }
+        for (int i = 0; i < BLK; i++) {
+            float smp;
+            if (pos < xf) {                        // crossfade head-in with tail-out
+                float t = ((float)pos + 0.5f) / (float)xf;
+                smp = src[pos] * sinf(t * 1.5707963f) + src[loopL + pos] * cosf(t * 1.5707963f);
+            } else {
+                smp = src[pos];
+            }
+            dry[i] = smp;
+            if (++pos >= loopL) pos = 0;
+        }
         float p[H3K_MAX_PARAMS];
         for (int k = 0; k < H3K_MAX_PARAMS; k++) p[k] = shm->params[k];   // live snapshot
         h3k_block(st, dry, BLK, p, out);
@@ -546,14 +564,8 @@ static void preview_start(const Audio *a, int algo, const float *params) {
         for (int c = 0; c < a->ch; c++) s += a->data[i * a->ch + c];
         src[i] = s / a->ch;
     }
-    // Seamless loop: fade the first & last ~12 ms to zero so the dry input has no
-    // step where the preview loop repeats (that step was an audible per-loop click).
-    long xf = (long)(0.012 * (double)shm->rate); if (xf > F / 4) xf = F / 4;
-    for (long k = 0; k < xf; k++) {
-        float g = (float)k / (float)xf;
-        src[k] *= g;
-        src[F - 1 - k] *= g;
-    }
+    // (The preview child crossfades the loop seam itself — see pv_child — so the
+    // source is passed through unmodified here.)
     pid_t pid = fork();
     if (pid < 0) { munmap(shm, sz); return; }
     if (pid == 0) {
