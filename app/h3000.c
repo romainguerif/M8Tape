@@ -17,6 +17,10 @@ extern const H3kAlgoDef delay_def;
 extern const H3kAlgoDef banddelay_def;
 extern const H3kAlgoDef reverb_def;
 extern const H3kAlgoDef reverse_def;
+extern const H3kAlgoDef phaser_def;
+extern const H3kAlgoDef stutter_def;
+extern const H3kAlgoDef string_def;
+extern const H3kAlgoDef vocoder_def;
 
 const H3kAlgoDef *const h3k_algos[] = {
     &micropitch_def,
@@ -27,6 +31,10 @@ const H3kAlgoDef *const h3k_algos[] = {
     &banddelay_def,
     &reverb_def,
     &reverse_def,
+    &phaser_def,
+    &stutter_def,
+    &string_def,
+    &vocoder_def,
 };
 const int h3k_algo_count = (int)(sizeof(h3k_algos) / sizeof(h3k_algos[0]));
 

@@ -101,6 +101,9 @@ typedef struct {
 
     // Tank feedback state (the other half's final delay output, fed back).
     float fb_l, fb_r;
+    // Output DC-blocker state (one-pole high-pass ~5 Hz) — a one-sided impulse
+    // otherwise leaves a DC offset that bleeds off over seconds and eats headroom.
+    float dc_x1l, dc_y1l, dc_x1r, dc_y1r;
     // LFO phase for the two modulated allpasses (quadrature, per the paper).
     float lfo_phase;
     float lfo_inc;
@@ -208,6 +211,15 @@ static void *rv_create(int rate) {
     return s;
 }
 
+// Gentle safety saturation: a sustained tone into a long, min-size tank can
+// resonate hot (~7x peak); this asymptotes to ~2 so it never hard-clips/crackles,
+// while staying ~transparent (near-linear) at normal reverb levels.
+static inline float rv_softclip(float x) {
+    const float lim = 2.0f;
+    float a = x / lim;
+    return lim * (a / (1.0f + 0.28f * a * a));
+}
+
 static void rv_block(void *st, const float *dry, int n, const float *p, float *outLR) {
     RevState *s = (RevState *)st;
 
@@ -312,6 +324,12 @@ static void rv_block(void *st, const float *dry, int n, const float *p, float *o
                  - TAP_GAIN * tap(&s->del1_r, 2111, tank_k)
                  - TAP_GAIN * tap(&s->dd2_r,   335, tank_k)
                  - TAP_GAIN * tap(&s->del2_r,  121, tank_k);
+
+        // DC blocker on the wet (one-pole high-pass): y = x - x1 + R*y1.
+        const float DCR = 0.9975f;
+        float bl = yl - s->dc_x1l + DCR * s->dc_y1l; s->dc_x1l = yl; s->dc_y1l = bl; yl = bl;
+        float br = yr - s->dc_x1r + DCR * s->dc_y1r; s->dc_x1r = yr; s->dc_y1r = br; yr = br;
+        yl = rv_softclip(yl); yr = rv_softclip(yr);
 
         // wet/dry mix (mono dry into both channels).
         float in0 = dry[i];

@@ -99,8 +99,12 @@ static void dly_block(void *st, const float *dry, int n, const float *p, float *
         float feedL = ping ? s->fbR : s->fbL;
         float feedR = ping ? s->fbL : s->fbR;
 
-        dl_write(&s->dl, in + fb * feedL);
-        dl_write(&s->dr, in + fb * feedR);
+        // Straight: the dry seeds both lines. Ping-pong: the dry seeds the LEFT
+        // line ONLY, so a mono source enters left then bounces L->R->L via the
+        // cross-feedback (seeding both kept them symmetric -> ping-pong was a no-op).
+        float inR = ping ? 0.0f : in;
+        dl_write(&s->dl, in  + fb * feedL);
+        dl_write(&s->dr, inR + fb * feedR);
 
         float wL = dl_read_ms(&s->dl, tL, s->rate);
         float wR = dl_read_ms(&s->dr, tR, s->rate);

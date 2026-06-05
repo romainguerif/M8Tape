@@ -196,7 +196,7 @@ static void bd_block(void *st, const float *dry, int n, const float *p, float *o
         float drive = in + fb_glob * s->gfb_last;
         drive = bd_san(drive);
 
-        float wetL = 0.0f, wetR = 0.0f, wetSum = 0.0f;
+        float wetL = 0.0f, wetR = 0.0f, gfbIn = 0.0f;
 
         for (int k = 0; k < BD_BANDS; k++) {
             // Write (input + this band's own filtered feedback) into its delay.
@@ -215,13 +215,15 @@ static void bd_block(void *st, const float *dry, int n, const float *p, float *o
             s->fbk[k] = fbv;
 
             float bg = bo * band_gain;
-            wetL   += bg * s->panL[k];
-            wetR   += bg * s->panR[k];
-            wetSum += bg;
+            wetL  += bg * s->panL[k];
+            wetR  += bg * s->panR[k];
+            gfbIn += bo;                // UN-boosted, for the global loop only
         }
 
-        // Feed the global recirculation delay from the (mono) wet sum.
-        dl_write(&s->gfb, bd_san(wetSum));
+        // Feed the global recirculation delay from the band sum NORMALIZED by the
+        // band count (and un-boosted): the round-trip gain then stays ~fb_glob < 1
+        // instead of ~fb_glob*8*band_gain, which self-oscillated at high FB/RES.
+        dl_write(&s->gfb, bd_san(gfbIn * (1.0f / (float)BD_BANDS)));
         s->gfb_last = bd_san(dl_read_ms(&s->gfb, time, rate));
 
         // Soft-clip each wet channel, then wet/dry blend.

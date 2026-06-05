@@ -20,6 +20,7 @@ struct PitchVoice {
     float  P;              // current window = splice interval (samples), adaptive
     float  Ptarget;        // de-glitch picks this at a splice; applied only while
                            // the far tap is muted (g==1) so the seam stays continuous
+    int    sinceRecomp, recompMin;  // cap the de-glitch search rate on fast wraps
     float  Pmin, Pmax;     // de-glitch period search bounds (samples)
     float  x;              // crossfade length (samples)
     float  ratio;          // 2^(cents/1200)
@@ -88,7 +89,7 @@ void pv_set_splice(PitchVoice *v, int splice) {
     float r = v->rate;
     switch (splice) {
         case SPLICE_H949_1:
-            v->deglitch = 1; v->x = 0.012f * r; v->corrL = 0.006f * r; v->corrStep = 6; v->driftDepth = 1.0f; break;
+            v->deglitch = 1; v->x = 0.012f * r; v->corrL = 0.006f * r; v->corrStep = 6; v->driftDepth = 0.0f; break;
         case SPLICE_H949_2:
             v->deglitch = 1; v->x = 0.016f * r; v->corrL = 0.009f * r; v->corrStep = 3; v->driftDepth = 0.0f; break;
         case SPLICE_MODERN:
@@ -109,6 +110,7 @@ PitchVoice *pv_create(int rate) {
     v->Pmax = v->Wmax;
     v->P    = v->Wmax;
     v->Ptarget = v->Wmax;
+    v->recompMin = (int)(0.010f * v->rate); if (v->recompMin < 1) v->recompMin = 1;
     v->x    = 0.012f * v->rate;
     v->ratio = 1.0f;
     v->corrL = 0.008f * v->rate; v->corrStep = 4;
@@ -148,12 +150,17 @@ float pv_process(PitchVoice *v, float in) {
         v->lfo1 += v->dlfo1; if (v->lfo1 > 6.2831853f) v->lfo1 -= 6.2831853f;
         v->lfo2 += v->dlfo2; if (v->lfo2 > 6.2831853f) v->lfo2 -= 6.2831853f;
     }
+    v->sinceRecomp++;
     v->phase += (1.0f - ratio);
+    // Recompute the de-glitch period at most every recompMin samples: on big
+    // upshifts wraps come very fast and the autocorrelation search would dominate
+    // CPU (risking preview underruns). Between recomputes the window just holds.
+    int recomp = v->deglitch && v->sinceRecomp >= v->recompMin;
     if (v->phase >= v->P) {                     // splice (downshift)
         v->phase -= v->P;
-        if (v->deglitch) v->Ptarget = pv_best_period(v);   // applied later, while muted
+        if (recomp) { v->Ptarget = pv_best_period(v); v->sinceRecomp = 0; }
     } else if (v->phase < 0.0f) {               // splice (upshift)
-        if (v->deglitch) v->Ptarget = pv_best_period(v);
+        if (recomp) { v->Ptarget = pv_best_period(v); v->sinceRecomp = 0; }
         v->phase += v->P;
     }
     return out;
