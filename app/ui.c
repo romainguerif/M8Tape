@@ -351,10 +351,21 @@ void ui_draw_confirm(UI *ui, SDL_Surface *s, const char *l1, const char *l2) {
     draw_text_c(s, ui->mono, "A  YES        B  NO", C_GREY, s->w / 2, s->h / 2 + 90);
 }
 
-void ui_draw_fx(UI *ui, SDL_Surface *s, const char *algo,
-                const char **labels, const char **values, int count, int sel, int playing) {
+#define FX_ROWH    72
+#define FX_VIZ_Y   108
+#define FX_VIZ_H   176
+static int fx_params_top(int hasViz) { return hasViz ? (FX_VIZ_Y + FX_VIZ_H + 14) : 130; }
+// how many parameter rows fit (for the caller's scroll math), with/without the viz band
+int ui_fx_visible_rows(SDL_Surface *s, int hasViz) {
+    int v = ((s->h - 92) - fx_params_top(hasViz)) / FX_ROWH;
+    return v < 1 ? 1 : v;
+}
+
+void ui_draw_fx(UI *ui, SDL_Surface *s, const char *category, const char *algo,
+                const char **labels, const char **values, int count, int sel, int scroll,
+                int playing, const float *vizDb, int vizN) {
     fillc(s, 0, 0, s->w, s->h, C_BG);
-    draw_label(s, ui->label, "H3000", C_GREY, MARGIN, 30, 3);
+    draw_label(s, ui->label, category ? category : "FX", C_GREY, MARGIN, 30, 3);
     int aw = draw_text(s, ui->h1, algo ? algo : "", C_WHITE, MARGIN + 180, 22);
     if (playing) {
         disc(s, MARGIN + 180 + aw + 28, 44, 7, C_RED);
@@ -362,17 +373,42 @@ void ui_draw_fx(UI *ui, SDL_Surface *s, const char *algo,
     }
     fillc(s, MARGIN, 96, s->w - 2 * MARGIN, 2, C_HAIR);
 
-    int top = 130;
-    int rowh = (s->h - 92 - top) / (count > 0 ? count : 1);   // fit above footer
-    if (rowh > 84) rowh = 84;
-    for (int i = 0; i < count; i++) {
-        int y = top + i * rowh;
+    int hasViz = (vizDb && vizN > 1);
+    if (hasViz) {                                   // EQ-style response curve
+        int vx = MARGIN, vy = FX_VIZ_Y, vw = s->w - 2 * MARGIN, vh = FX_VIZ_H;
+        fillc(s, vx, vy, vw, vh, C_PANEL);
+        int midy = vy + vh / 2;
+        fillc(s, vx, midy, vw, 1, C_HAIR);          // 0 dB line
+        const float range = 18.0f;                  // +/- 18 dB full-scale
+        int prevY = midy;
+        for (int x = 0; x < vw; x++) {
+            int idx = (int)((float)x / (float)vw * (float)(vizN - 1));
+            float db = vizDb[idx];
+            if (db >  range) db =  range;
+            if (db < -range) db = -range;
+            int y = midy - (int)(db / range * (float)(vh / 2 - 6));
+            int y0 = prevY < y ? prevY : y, y1 = prevY < y ? y : prevY;
+            fillc(s, vx + x, y0, 2, y1 - y0 + 2, C_AMBER);
+            prevY = y;
+        }
+    }
+
+    int top = fx_params_top(hasViz);
+    int vis = ui_fx_visible_rows(s, hasViz);
+    if (scroll < 0) scroll = 0;
+    if (scroll > count - vis) scroll = (count - vis > 0) ? count - vis : 0;
+    for (int r = 0; r < vis && scroll + r < count; r++) {
+        int i = scroll + r, y = top + r * FX_ROWH;
         if (i == sel) {
-            fillc(s, MARGIN, y, s->w - 2 * MARGIN, rowh - 14, C_PANEL);
-            fillc(s, MARGIN, y, 7, rowh - 14, C_RED);
+            fillc(s, MARGIN, y, s->w - 2 * MARGIN, FX_ROWH - 14, C_PANEL);
+            fillc(s, MARGIN, y, 7, FX_ROWH - 14, C_RED);
         }
         draw_text(s, ui->h1, labels[i], i == sel ? C_WHITE : C_GREY, MARGIN + 40, y + 6);
         draw_text_r(s, ui->h1, values[i], i == sel ? C_AMBER : C_GREY, s->w - MARGIN - 40, y + 6);
+    }
+    if (count > vis) {                              // "n/N" position when the list scrolls
+        char ind[16]; snprintf(ind, sizeof(ind), "%d/%d", sel + 1, count);
+        draw_text_r(s, ui->mono_sm, ind, C_GREY, s->w - MARGIN, top - 26);
     }
     fillc(s, MARGIN, s->h - 92, s->w - 2 * MARGIN, 2, C_HAIR);
     draw_text(s, ui->mono_sm, "<> ADJUST  L/R FX  A PREVIEW", C_GREY, MARGIN, s->h - 64);

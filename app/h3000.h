@@ -10,7 +10,7 @@
 
 #include "wav.h"   // Audio
 
-#define H3K_MAX_PARAMS 12
+#define H3K_MAX_PARAMS 28   /* room for the 8-band EQ (8 x freq/gain/Q) */
 
 // How a parameter's float value is interpreted / displayed / stepped.
 typedef enum {
@@ -38,12 +38,21 @@ typedef struct {
 // the preview hears edits immediately.
 typedef struct {
     const char *name;
+    const char *category;   // picker grouping; NULL is treated as "H3000"
     int nparams;
     ParamSpec params[H3K_MAX_PARAMS];
     void *(*create)(int rate);
     void  (*block)(void *st, const float *dry, int n, const float *p, float *outLR);
     void  (*destroy)(void *st);
+    // OPTIONAL viz: fill outDb[n] with the effect's magnitude response in dB across
+    // a log sweep (20 Hz .. min(20k, rate*0.45)) computed from the params ALONE
+    // (stateless — runs in the UI process). Return 1 if filled, 0/NULL = no viz
+    // (the FX screen then just shows the parameter rows). Used by the EQ curve.
+    int   (*response)(const float *p, int rate, float *outDb, int n);
 } H3kAlgoDef;
+
+// Category of algo `i` ("H3000" if the def left it NULL).
+const char *h3k_category(int algo);
 
 // --- algorithm registry (defined in h3000.c) --------------------------------
 extern const H3kAlgoDef *const h3k_algos[];

@@ -728,6 +728,30 @@ enum NamePurpose { NP_REC, NP_RENAME, NP_NEWFOLDER, NP_SAVEAS };
 #define NAV(b) (PAD_justPressed(b) || PAD_justRepeated(b))
 static int row_width(int row) { return row < KB_CHAR_ROWS ? KB_COLS : KB_ACTIONS; }
 
+// --- FX picker categories (H3000 / STUDIO / ...) ----------------------------
+static int fx_categories(const char *cats[], int cap) {
+    int n = 0;
+    for (int i = 0; i < h3k_algo_count; i++) {
+        const char *c = h3k_category(i);
+        int seen = 0; for (int j = 0; j < n; j++) if (!strcmp(cats[j], c)) { seen = 1; break; }
+        if (!seen && n < cap) cats[n++] = c;
+    }
+    return n;
+}
+static int fx_algos_in_cat(const char *cat, int *out, int cap) {
+    int n = 0;
+    for (int i = 0; i < h3k_algo_count && n < cap; i++)
+        if (!strcmp(h3k_category(i), cat)) out[n++] = i;
+    return n;
+}
+static int fx_cycle_in_cat(int algo, int dir) {       // prev/next within the same category
+    int list[64], n = fx_algos_in_cat(h3k_category(algo), list, 64);
+    if (n <= 0) return algo;
+    int pos = 0; for (int i = 0; i < n; i++) if (list[i] == algo) { pos = i; break; }
+    pos = ((pos + dir) % n + n) % n;
+    return list[pos];
+}
+
 int main(int argc, char *argv[]) {
     g_out_dir = (argc > 1) ? argv[1] : ".";
 
@@ -785,7 +809,9 @@ int main(int argc, char *argv[]) {
     int   fx_algo = 0;
     float fx_params[H3K_MAX_PARAMS] = {0};
     int   h_sel = 0;                            // selected param row in FX screen
-    int   fx_pick_sel = 0, fx_pick_scroll = 0;  // algorithm picker list
+    int   h_scroll = 0;                          // FX param-list scroll offset
+    int   fx_pick_sel = 0, fx_pick_scroll = 0;  // picker cursor
+    int   fx_incat = -1;                         // -1 = category list; else category index being browsed
 
     while (!quitting) {
         GFX_startFrame();
@@ -1001,7 +1027,7 @@ int main(int argc, char *argv[]) {
             if (PAD_justPressed(BTN_A)) {
                 const char *op = EMENU[emenu_sel];
                 int back = 1;
-                if (!strcmp(op, "H3000 FX")) { fx_pick_sel = 0; fx_pick_scroll = 0; stop_play(); mode = M_FX_PICK; back = -1; }
+                if (!strcmp(op, "H3000 FX")) { fx_incat = -1; fx_pick_sel = 0; fx_pick_scroll = 0; stop_play(); mode = M_FX_PICK; back = -1; }
                 else if (!strcmp(op, "NORMALIZE")) au_normalize(&g_au);
                 else if (!strcmp(op, "GAIN +1 DB")) au_gain_db(&g_au, g_in, g_out, 1.0f);
                 else if (!strcmp(op, "GAIN -1 DB")) au_gain_db(&g_au, g_in, g_out, -1.0f);
@@ -1028,17 +1054,29 @@ int main(int argc, char *argv[]) {
             redraw = 1;
         } else if (mode == M_FX_PICK) {
             int mvis = ui_menu_visible_rows(screen);
+            const char *cats[16]; int ncat = fx_categories(cats, 16);
+            int list[64], n;
+            if (fx_incat < 0 || fx_incat >= ncat) { fx_incat = (fx_incat >= ncat) ? -1 : fx_incat; n = ncat; }
+            else n = fx_algos_in_cat(cats[fx_incat], list, 64);
+            if (n < 1) n = 1;
             if (NAV(BTN_UP))   { if (fx_pick_sel > 0) fx_pick_sel--; }
-            if (NAV(BTN_DOWN)) { if (fx_pick_sel < h3k_algo_count - 1) fx_pick_sel++; }
+            if (NAV(BTN_DOWN)) { if (fx_pick_sel < n - 1) fx_pick_sel++; }
             if (fx_pick_sel < fx_pick_scroll) fx_pick_scroll = fx_pick_sel;
             if (fx_pick_sel >= fx_pick_scroll + mvis) fx_pick_scroll = fx_pick_sel - mvis + 1;
-            if (PAD_justPressed(BTN_A)) {                 // choose this algorithm
-                fx_algo = fx_pick_sel;
-                h3k_defaults(fx_algo, fx_params);
-                h_sel = 0;
-                mode = M_H3000;
+            if (PAD_justPressed(BTN_A)) {
+                if (fx_incat < 0) {                       // pick a category -> list its effects
+                    fx_incat = fx_pick_sel; fx_pick_sel = 0; fx_pick_scroll = 0;
+                } else if (fx_pick_sel < n) {             // pick an effect -> open it
+                    fx_algo = list[fx_pick_sel];
+                    h3k_defaults(fx_algo, fx_params);
+                    h_sel = 0;
+                    mode = M_H3000;
+                }
             }
-            if (PAD_justPressed(BTN_B)) mode = M_EDIT;
+            if (PAD_justPressed(BTN_B)) {
+                if (fx_incat < 0) mode = M_EDIT;          // leave the picker
+                else { fx_incat = -1; fx_pick_sel = 0; fx_pick_scroll = 0; }  // back to categories
+            }
             redraw = 1;
         } else if (mode == M_H3000) {
             const H3kAlgoDef *def = h3k_algos[fx_algo];
@@ -1046,7 +1084,7 @@ int main(int argc, char *argv[]) {
             // that algo's default params; restarts the preview so A/B is instant).
             int algo_d = PAD_justPressed(BTN_R1) ? 1 : PAD_justPressed(BTN_L1) ? -1 : 0;
             if (algo_d) {
-                fx_algo = (fx_algo + algo_d + h3k_algo_count) % h3k_algo_count;
+                fx_algo = fx_cycle_in_cat(fx_algo, algo_d);   // prev/next within the category
                 def = h3k_algos[fx_algo];
                 h3k_defaults(fx_algo, fx_params);
                 h_sel = 0;
@@ -1054,6 +1092,9 @@ int main(int argc, char *argv[]) {
             }
             if (NAV(BTN_UP))   { if (h_sel > 0) h_sel--; }
             if (NAV(BTN_DOWN)) { if (h_sel < def->nparams - 1) h_sel++; }
+            int hvis = ui_fx_visible_rows(screen, def->response != NULL);  // keep sel in view
+            if (h_sel < h_scroll) h_scroll = h_sel;
+            if (h_sel >= h_scroll + hvis) h_scroll = h_sel - hvis + 1;
             int dl = NAV(BTN_RIGHT) ? 1 : NAV(BTN_LEFT) ? -1 : 0;
             if (dl) fx_params[h_sel] = h3k_adjust(&def->params[h_sel], fx_params[h_sel], dl);
             if (g_pv_active && g_pv_shm)                  // live: tweak heard now
@@ -1071,7 +1112,16 @@ int main(int argc, char *argv[]) {
                 }
                 mode = M_EDIT;
             }
-            if (PAD_justPressed(BTN_B)) { preview_stop(); mode = M_FX_PICK; }   // back to picker to switch
+            if (PAD_justPressed(BTN_B)) {                 // back to this effect's category list
+                preview_stop();
+                const char *cats[16]; int ncat = fx_categories(cats, 16);
+                int list[64], m = 0; fx_incat = 0;
+                for (int i = 0; i < ncat; i++) if (!strcmp(cats[i], h3k_category(fx_algo))) { fx_incat = i; break; }
+                m = fx_algos_in_cat(cats[fx_incat], list, 64);
+                fx_pick_sel = 0; for (int i = 0; i < m; i++) if (list[i] == fx_algo) { fx_pick_sel = i; break; }
+                fx_pick_scroll = 0;
+                mode = M_FX_PICK;
+            }
             redraw = 1;
         } else if (mode == M_SETTINGS) {
             if (NAV(BTN_UP))   { if (set_sel > 0) set_sel--; }
@@ -1167,10 +1217,17 @@ int main(int argc, char *argv[]) {
                 const char *svalues[4] = {v0, v1, v2, v3};
                 ui_draw_settings(&ui, screen, "SETTINGS", slabels, svalues, 4, set_sel);
             } else if (mode == M_FX_PICK) {
-                const char *names[32];
-                int nn = h3k_algo_count; if (nn > 32) nn = 32;
-                for (int i = 0; i < nn; i++) names[i] = h3k_algos[i]->name;
-                ui_draw_menu(&ui, screen, "H3000 FX", names, nn, fx_pick_sel, fx_pick_scroll);
+                const char *cats[16]; int ncat = fx_categories(cats, 16);
+                const char *names[40]; int nn = 0; const char *title;
+                if (fx_incat < 0 || fx_incat >= ncat) {           // category list
+                    for (int i = 0; i < ncat && nn < 40; i++) names[nn++] = cats[i];
+                    title = "FX";
+                } else {                                          // effects in a category
+                    int list[64]; int m = fx_algos_in_cat(cats[fx_incat], list, 64);
+                    for (int i = 0; i < m && nn < 40; i++) names[nn++] = h3k_algos[list[i]]->name;
+                    title = cats[fx_incat];
+                }
+                ui_draw_menu(&ui, screen, title, names, nn, fx_pick_sel, fx_pick_scroll);
             } else if (mode == M_H3000) {
                 const H3kAlgoDef *def = h3k_algos[fx_algo];
                 char vbuf[H3K_MAX_PARAMS][24];
@@ -1181,7 +1238,12 @@ int main(int argc, char *argv[]) {
                     h3k_format(&def->params[i], fx_params[i], vbuf[i], sizeof(vbuf[i]));
                     hv[i] = vbuf[i];
                 }
-                ui_draw_fx(&ui, screen, def->name, hl, hv, def->nparams, h_sel, g_pv_active);
+                float vizDb[256]; const float *viz = NULL; int vizN = 0;
+                if (def->response && def->response(fx_params, g_au.rate > 0 ? g_au.rate : 48000, vizDb, 256)) {
+                    viz = vizDb; vizN = 256;
+                }
+                ui_draw_fx(&ui, screen, h3k_category(fx_algo), def->name, hl, hv,
+                           def->nparams, h_sel, h_scroll, g_pv_active, viz, vizN);
             } else {
                 ui_draw_home(&ui, screen, &ui_in);
             }

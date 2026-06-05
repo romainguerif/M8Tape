@@ -21,6 +21,10 @@ extern const H3kAlgoDef phaser_def;
 extern const H3kAlgoDef stutter_def;
 extern const H3kAlgoDef string_def;
 extern const H3kAlgoDef vocoder_def;
+extern const H3kAlgoDef eq_def;        // STUDIO
+extern const H3kAlgoDef declick_def;   // STUDIO
+extern const H3kAlgoDef comp_def;      // STUDIO
+extern const H3kAlgoDef drive_def;     // STUDIO
 
 const H3kAlgoDef *const h3k_algos[] = {
     &micropitch_def,
@@ -35,8 +39,18 @@ const H3kAlgoDef *const h3k_algos[] = {
     &stutter_def,
     &string_def,
     &vocoder_def,
+    &eq_def,
+    &declick_def,
+    &comp_def,
+    &drive_def,
 };
 const int h3k_algo_count = (int)(sizeof(h3k_algos) / sizeof(h3k_algos[0]));
+
+const char *h3k_category(int algo) {
+    if (algo < 0 || algo >= h3k_algo_count) return "H3000";
+    const char *c = h3k_algos[algo]->category;
+    return c ? c : "H3000";
+}
 
 // --- generic streaming engine ------------------------------------------------
 struct H3kEngine { const H3kAlgoDef *def; void *st; };

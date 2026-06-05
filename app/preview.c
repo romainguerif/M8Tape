@@ -36,8 +36,19 @@ int main(void) {
 
     const char *hl[7] = {"PITCH A (L)", "DELAY A", "PITCH B (R)", "DELAY B", "FEEDBACK", "MIX", "SPLICE"};
     const char *hv[7] = {"-9 CENTS", "15 MS", "+11 CENTS", "25 MS", "0%", "50%", "H910"};
-    ui_draw_fx(&ui, s, "MICROPITCH", hl, hv, 7, 0, 1);
+    ui_draw_fx(&ui, s, "H3000", "MICROPITCH", hl, hv, 7, 0, 0, 1, NULL, 0);
     save(s, "out_fx.bmp");
+
+    // STUDIO EQ screen: response curve + scrolling param rows (viz sanity check)
+    float eqdb[256];
+    for (int i = 0; i < 256; i++) {
+        float a = (i - 90) / 30.0f, b = (i - 200) / 22.0f;
+        eqdb[i] = 11.0f * expf(-a * a) - 6.0f * expf(-b * b);
+    }
+    const char *el[10] = {"B1 FREQ","B1 GAIN","B1 Q","B2 FREQ","B2 GAIN","B2 Q","B3 FREQ","B3 GAIN","B3 Q","B4 FREQ"};
+    const char *ev[10] = {"60 HZ","+8 DB","0.70","150 HZ","-4 DB","1.20","400 HZ","0 DB","0.70","1000 HZ"};
+    ui_draw_fx(&ui, s, "STUDIO", "EQ", el, ev, 10, 4, 2, 0, eqdb, 256);
+    save(s, "out_fx_eq.bmp");
 
     const char *fxnames[] = {"MICROPITCH", "DUAL SHIFT", "DIATONIC", "ULTRA-TAP",
                              "DUAL DELAY", "BAND DELAY", "REVERB", "REVERSE",
