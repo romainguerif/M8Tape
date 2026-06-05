@@ -357,7 +357,7 @@ const H3kAlgoDef diatonic_def = {
         { "SCALE",    0,  3, 1, 0,    PK_CHOICE,  SCALE_CHOICES    },
         { "INTERVAL", 0,  4, 1, 0,    PK_CHOICE,  INTERVAL_CHOICES },
         { "MIX",      0,  1, 0.05f, 0.5f, PK_PERCENT, 0            },
-        { "SPLICE",   0,  3, 1, 1,    PK_CHOICE,  PITCH_SPLICE_CHOICES },
+        { "SPLICE",   0,  3, 1, 0,    PK_CHOICE,  PITCH_SPLICE_CHOICES },
     },
     .create = diat_create,
     .block = diat_block,

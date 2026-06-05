@@ -470,16 +470,19 @@ static void pv_child(PvShared *shm) {
     int ok = 0;
     for (int t = 0; t < 10 && !ok; t++) {
         if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) == 0 &&
-            // 250 ms of buffer (was 80) so scheduling jitter / a heavy DSP block
-            // can't underrun the device -> the crackle/clicks heard on headphones.
+            // 400 ms of buffer (was 80) so scheduling jitter / a heavy DSP block
+            // (reverb, vocoder, band delay...) can't underrun the device -> crackle.
             snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                               2, shm->rate, 1, 250000) == 0) ok = 1;
+                               2, shm->rate, 1, 400000) == 0) ok = 1;
         else { if (pcm) { snd_pcm_close(pcm); pcm = NULL; } usleep(50000); }
     }
     if (!ok) _exit(1);
+    // Re-apply the system volume now the PCM/codec is open: opening "default" can
+    // reset the mixer, leaving the preview silent until the user nudges volume +/-.
+    SetVolume(GetVolume());
     H3kEngine *st = h3k_create(shm->algo, shm->rate);
     if (!st) { snd_pcm_close(pcm); _exit(1); }
-    enum { BLK = 1024 };                           // bigger blocks = more headroom
+    enum { BLK = 2048 };                           // bigger blocks = more headroom
     float dry[BLK], out[BLK * 2];
     short s16[BLK * 2];
     long pos = 0, xruns = 0, blocks = 0;
