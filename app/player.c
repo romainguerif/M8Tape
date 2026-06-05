@@ -58,7 +58,10 @@ int play_wav_fade(const char *path) {
 
     snd_pcm_t *pcm;
     if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) { fclose(f); return -1; }
-    if (snd_pcm_set_params(pcm, fmt, SND_PCM_ACCESS_RW_INTERLEAVED, ch, rate, 1, 100000) < 0) {
+    // 60 ms buffer: small enough that pressing stop feels immediate (little
+    // full-volume audio stays queued ahead of the fade), big enough that light
+    // file streaming won't underrun.
+    if (snd_pcm_set_params(pcm, fmt, SND_PCM_ACCESS_RW_INTERLEAVED, ch, rate, 1, 60000) < 0) {
         snd_pcm_close(pcm); fclose(f); return -1;
     }
 

@@ -463,6 +463,7 @@ static char g_cur[1024];
 static struct Entry g_ents[512];
 static int g_nent, g_bsel, g_bscroll;
 static pid_t g_play_pid;
+static pid_t g_dying_pid = 0;   // a player we've SIGTERM'd; it fades out in the background
 static int g_play_sel = -1;
 
 static int ent_cmp(const void *a, const void *b) {
@@ -521,14 +522,21 @@ static void crumb_of(char *out, int cap) {
 static int at_places(void) { return g_cur[0] == '\0'; }
 
 static void reap_play(void) {
-    if (g_play_pid > 0) {
-        int st;
-        if (waitpid(g_play_pid, &st, WNOHANG) == g_play_pid) { g_play_pid = 0; g_play_sel = -1; }
-    }
+    int st;
+    if (g_play_pid  > 0 && waitpid(g_play_pid,  &st, WNOHANG) == g_play_pid)  { g_play_pid = 0; g_play_sel = -1; }
+    if (g_dying_pid > 0 && waitpid(g_dying_pid, &st, WNOHANG) == g_dying_pid)   g_dying_pid = 0;
 }
 static void stop_play(void) {
-    if (g_play_pid > 0) { kill(g_play_pid, SIGTERM); int st; waitpid(g_play_pid, &st, 0); }
-    g_play_pid = 0; g_play_sel = -1;
+    // Non-blocking: SIGTERM the player (it fades out ~20-30 ms then exits) and return
+    // immediately so the UI never freezes waiting for the ALSA drain. The fading
+    // child is tracked in g_dying_pid and reaped later by reap_play(); at most one
+    // fading child at a time (kill a lingering one first).
+    if (g_play_pid > 0) {
+        if (g_dying_pid > 0) { kill(g_dying_pid, SIGKILL); int st; waitpid(g_dying_pid, &st, 0); }
+        kill(g_play_pid, SIGTERM);
+        g_dying_pid = g_play_pid;
+        g_play_pid = 0; g_play_sel = -1;
+    }
 }
 static void start_play_path(const char *path, int sel) {
     stop_play();
@@ -546,6 +554,72 @@ static void start_play(int idx) {
     char p[1300];
     snprintf(p, sizeof(p), "%s/%s", g_cur, g_ents[idx].name);
     start_play_path(p, idx);
+}
+
+// --- audition the editor's in-memory selection directly (no temp file) -------
+// Writing a multi-minute selection to a temp WAV before previewing added seconds of
+// latency on big samples; this streams g_au.data[s..e] straight to ALSA from a
+// forked child so playback starts instantly regardless of length. ~20 ms fade-out
+// on SIGTERM (click-free stop), like the file player.
+static volatile sig_atomic_t pm_stop_flag;
+static void pm_on_term(int sig) { (void)sig; pm_stop_flag = 1; }
+static void play_mem_child(const Audio *a, long s, long e) {
+    if (s < 0) s = 0;
+    if (e > a->frames) e = a->frames;
+    if (e <= s) _exit(0);
+    int rate = a->rate > 0 ? a->rate : 48000;
+    int ch   = a->ch   < 1 ? 1 : a->ch;
+    snd_pcm_t *pcm = NULL; int ok = 0;
+    for (int t = 0; t < 10 && !ok; t++) {
+        if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) == 0 &&
+            snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                               2, rate, 1, 60000) == 0) ok = 1;
+        else { if (pcm) { snd_pcm_close(pcm); pcm = NULL; } usleep(30000); }
+    }
+    if (!ok) _exit(1);
+    struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_handler = pm_on_term;
+    sigaction(SIGTERM, &sa, NULL); sigaction(SIGINT, &sa, NULL);
+
+    enum { BLK = 512 };
+    short s16[BLK * 2];
+    int fade_total = rate * 20 / 1000; if (fade_total < 1) fade_total = 1;
+    int fade_left = fade_total, fading = 0, done = 0;
+    long pos = s;
+    while (!done && pos < e) {
+        int nf = 0;
+        while (nf < BLK && pos < e) {
+            float l, r;
+            if (ch == 1) { l = r = a->data[pos]; }
+            else { l = a->data[pos * ch]; r = a->data[pos * ch + 1]; }
+            float g = 1.0f;
+            if (pm_stop_flag && !fading) fading = 1;
+            if (fading) { g = (float)fade_left / (float)fade_total; if (--fade_left <= 0) done = 1; }
+            int li = (int)(l * g * 32767.0f), ri = (int)(r * g * 32767.0f);
+            if (li >  32767) li =  32767; else if (li < -32768) li = -32768;
+            if (ri >  32767) ri =  32767; else if (ri < -32768) ri = -32768;
+            s16[nf * 2] = (short)li; s16[nf * 2 + 1] = (short)ri;
+            nf++; pos++;
+            if (done) break;
+        }
+        snd_pcm_sframes_t w = snd_pcm_writei(pcm, s16, nf);
+        if (w < 0) snd_pcm_recover(pcm, (int)w, 1);
+    }
+    snd_pcm_drain(pcm);
+    snd_pcm_close(pcm);
+    _exit(0);
+}
+static void start_play_mem(const Audio *a, long s, long e, int sel) {
+    stop_play();
+    if (!a->data || a->frames < 1) return;
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        char logp[640]; snprintf(logp, sizeof(logp), "%s/play.log", g_out_dir);
+        freopen(logp, "w", stderr); freopen("/dev/null", "w", stdout);
+        play_mem_child(a, s, e);
+        _exit(0);
+    }
+    g_play_pid = pid; g_play_sel = sel;
 }
 
 static void enter_dir(const char *name) {
@@ -1012,7 +1086,7 @@ int main(int argc, char *argv[]) {
             if (PAD_justPressed(BTN_X)) { g_out = au_snap_zero(&g_au, g_curpos, zwin); if (g_out <= g_in) g_out = g_in + 1; if (g_out > g_au.frames) g_out = g_au.frames; }
             if (PAD_justPressed(BTN_A)) {
                 if (g_play_pid > 0) stop_play();
-                else if (wav_save_range(g_tmpplay, &g_au, g_in, g_out) == 0) start_play_path(g_tmpplay, -2);
+                else start_play_mem(&g_au, g_in, g_out, -2);   // audition selection from RAM (instant, no temp file)
             }
             if (PAD_justPressed(BTN_START)) { emenu_sel = 0; emenu_scroll = 0; mode = M_EMENU; }
             if (PAD_justPressed(BTN_B)) {
@@ -1049,7 +1123,12 @@ int main(int argc, char *argv[]) {
                 else if (!strcmp(op, "16-BIT")) au_dither16(&g_au);
                 else if (!strcmp(op, "HALF RATE")) { au_halve_rate(&g_au); g_in = 0; g_out = g_au.frames; g_curpos = 0; g_view_span = g_au.frames; }
                 else if (!strcmp(op, "SAVE")) { remount("async"); wav_save(g_edit_path, &g_au); remount("sync"); g_modified = 0; list_dir(); back = 0; }
-                else if (!strcmp(op, "SAVE AS")) { name[0] = '\0'; name_purpose = NP_SAVEAS; caps = 0; krow = 1; kcol = 0; mode = M_NAME; back = -1; }
+                else if (!strcmp(op, "SAVE AS")) {           // pre-fill with the current name (easy v2/v3)
+                    const char *b = strrchr(g_edit_path, '/'); b = b ? b + 1 : g_edit_path;
+                    snprintf(name, sizeof(name), "%s", b);
+                    char *d = strrchr(name, '.'); if (d && !strcasecmp(d, ".wav")) *d = '\0';
+                    name_purpose = NP_SAVEAS; caps = 0; krow = 1; kcol = 0; mode = M_NAME; back = -1;
+                }
                 else if (!strcmp(op, "EXIT")) {
                     back = -1;
                     if (g_modified) mode = M_EDIT_EXIT;
