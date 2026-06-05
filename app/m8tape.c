@@ -655,6 +655,9 @@ int main(int argc, char *argv[]) {
     PAD_init();
     PWR_init();
     InitSettings();
+    PWR_disableAutosleep();   // audio app: never idle-sleep the screen mid-listen
+                              // (during preview/playback there are no button presses,
+                              //  and the system 'sleep off' wasn't honored in-app)
     SetVolume(GetVolume());   // push the saved system volume to the mixer on launch
                               // (we open ALSA directly, so nothing else applies it →
                               //  otherwise the NextUI volume isn't honored until the
