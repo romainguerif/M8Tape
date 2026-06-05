@@ -591,6 +591,10 @@ int main(int argc, char *argv[]) {
     PAD_init();
     PWR_init();
     InitSettings();
+    SetVolume(GetVolume());   // push the saved system volume to the mixer on launch
+                              // (we open ALSA directly, so nothing else applies it →
+                              //  otherwise the NextUI volume isn't honored until the
+                              //  user nudges +/- in-app)
     setup_library();
     load_settings();
 

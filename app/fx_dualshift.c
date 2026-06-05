@@ -136,7 +136,7 @@ const H3kAlgoDef dualshift_def = {
         { "DELAY B",       0, 1500,  10,      0,  PK_MS,      0 },
         { "FEEDBACK",      0, 0.9f,  0.05f,   0,  PK_PERCENT, 0 },
         { "MIX",           0,    1,  0.05f, 0.5f, PK_PERCENT, 0 },
-        { "SPLICE",        0,    3,   1,      1,  PK_CHOICE,  PITCH_SPLICE_CHOICES },
+        { "SPLICE",        0,    3,   1,      0,  PK_CHOICE,  PITCH_SPLICE_CHOICES },
     },
     .create = ds_create,
     .block = ds_block,
