@@ -40,8 +40,9 @@ int main(void) {
     save(s, "out_fx.bmp");
 
     const char *fxnames[] = {"MICROPITCH", "DUAL SHIFT", "DIATONIC", "ULTRA-TAP",
-                             "DUAL DELAY", "BAND DELAY", "REVERB", "REVERSE"};
-    ui_draw_menu(&ui, s, "H3000 FX", fxnames, 8, 1, 0);
+                             "DUAL DELAY", "BAND DELAY", "REVERB", "REVERSE",
+                             "PHASER", "STUTTER", "STRING", "VOCODER"};
+    ui_draw_menu(&ui, s, "H3000 FX", fxnames, 12, 1, 0);
     save(s, "out_fxpick.bmp");
 
     ui_draw_keyboard(&ui, s, "NAME SAMPLE", "rain_forest", 0, 1, 3);
