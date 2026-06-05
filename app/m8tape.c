@@ -176,6 +176,11 @@ static char g_lgpt[1024];                  // LGPT/Piggy data dir (under the hid
 static char g_tmp[600];                    // raw take staged here before naming
 static char g_tmpplay[640];                // selection audition temp
 
+#define MAX_PLACES 16
+typedef struct { char name[40]; char path[1024]; } Place;
+static Place g_places[MAX_PLACES];         // shortcut folders shown at the PLACES root
+static int   g_nplaces;
+
 static int dir_exists(const char *p) {
     struct stat st;
     return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
@@ -228,6 +233,57 @@ static void detect_lgpt(void) {
         }
 }
 
+static void add_place(const char *name, const char *path) {
+    if (g_nplaces >= MAX_PLACES || !name || !*name || !path || !*path) return;
+    snprintf(g_places[g_nplaces].name, sizeof(g_places[0].name), "%s", name);
+    snprintf(g_places[g_nplaces].path, sizeof(g_places[0].path), "%s", path);
+    g_nplaces++;
+}
+static void seed_default_places(void) {
+    g_nplaces = 0;
+    add_place("M8TAPE", g_lib);
+    if (g_lgpt[0]) add_place("LGPT", g_lgpt);
+    add_place("SD CARD", g_sd);
+}
+// PLACES shortcuts (the folders shown when you open the library) are user-editable
+// via <pak>/places.cfg — "NAME = /absolute/path" per line, '#' starts a comment.
+// Seeded from detection on first run and written out so it can be edited later;
+// re-read every launch.
+static void load_places(void) {
+    char file[700];
+    snprintf(file, sizeof(file), "%s/places.cfg", g_out_dir);
+    FILE *f = fopen(file, "r");
+    if (!f) {                                   // first run: seed defaults + write the file
+        seed_default_places();
+        f = fopen(file, "w");
+        if (f) {
+            fprintf(f, "# M8Tape PLACES - shortcut folders shown when you open the library.\n");
+            fprintf(f, "# One per line:  NAME = /absolute/path     ('#' starts a comment)\n");
+            fprintf(f, "# Add your own (field recordings, a project's samples, an SD folder...).\n\n");
+            for (int i = 0; i < g_nplaces; i++)
+                fprintf(f, "%s = %s\n", g_places[i].name, g_places[i].path);
+        }
+        if (f) fclose(f);
+        return;
+    }
+    g_nplaces = 0;
+    char line[1200];
+    while (fgets(line, sizeof(line), f) && g_nplaces < MAX_PLACES) {
+        char *nl = strpbrk(line, "\r\n"); if (nl) *nl = '\0';
+        char *s = line; while (*s == ' ' || *s == '\t') s++;
+        if (*s == '\0' || *s == '#') continue;
+        char *eq = strchr(s, '='); if (!eq) continue;
+        *eq = '\0';
+        char *nm = s, *pa = eq + 1;
+        char *ne = nm + strlen(nm); while (ne > nm && (ne[-1] == ' ' || ne[-1] == '\t')) *--ne = '\0';
+        while (*pa == ' ' || *pa == '\t') pa++;
+        char *pe = pa + strlen(pa); while (pe > pa && (pe[-1] == ' ' || pe[-1] == '\t')) *--pe = '\0';
+        add_place(nm, pa);
+    }
+    fclose(f);
+    if (g_nplaces == 0) seed_default_places();  // empty/garbage file -> fall back to defaults
+}
+
 static void setup_library(void) {
     char mp[256];
     sdcard_mount(mp, sizeof(mp));
@@ -240,6 +296,7 @@ static void setup_library(void) {
     mkdir(uns, 0777);
     snprintf(g_tmp, sizeof(g_tmp), "%s/.tmprec.wav", g_lib);
     snprintf(g_tmpplay, sizeof(g_tmpplay), "%s/.tmpplay.wav", g_lib);
+    load_places();
 }
 
 // --- settings (persisted in the pak) ----------------------------------------
@@ -416,13 +473,15 @@ static int ent_cmp(const void *a, const void *b) {
 
 static void list_dir(void) {
     g_nent = 0;
-    if (g_cur[0] == '\0') {                 // PLACES root (virtual): the shortcut folders
-        snprintf(g_ents[g_nent].name, sizeof(g_ents[0].name), "M8TAPE");  g_ents[g_nent++].is_dir = 1;
-        if (g_lgpt[0]) { snprintf(g_ents[g_nent].name, sizeof(g_ents[0].name), "LGPT"); g_ents[g_nent++].is_dir = 1; }
-        snprintf(g_ents[g_nent].name, sizeof(g_ents[0].name), "SD CARD"); g_ents[g_nent++].is_dir = 1;
-        if (g_bsel >= g_nent) g_bsel = g_nent - 1;
+    if (g_cur[0] == '\0') {                 // PLACES root (virtual): the configured shortcuts
+        for (int i = 0; i < g_nplaces && g_nent < 512; i++) {
+            if (!dir_exists(g_places[i].path)) continue;   // hide shortcuts whose folder is gone
+            snprintf(g_ents[g_nent].name, sizeof(g_ents[0].name), "%s", g_places[i].name);
+            g_ents[g_nent++].is_dir = 1;
+        }
+        if (g_bsel >= g_nent) g_bsel = g_nent ? g_nent - 1 : 0;
         if (g_bsel < 0) g_bsel = 0;
-        return;                              // no sort -> keep M8TAPE / LGPT / SD CARD order
+        return;                              // no sort -> keep the places.cfg order
     }
     DIR *d = opendir(g_cur);
     if (d) {
@@ -492,10 +551,9 @@ static void start_play(int idx) {
 static void enter_dir(const char *name) {
     stop_play();
     if (g_cur[0] == '\0') {                            // PLACES root -> jump into a place
-        if      (!strcmp(name, "M8TAPE"))  snprintf(g_cur, sizeof(g_cur), "%s", g_lib);
-        else if (!strcmp(name, "LGPT"))    snprintf(g_cur, sizeof(g_cur), "%s", g_lgpt);
-        else if (!strcmp(name, "SD CARD")) snprintf(g_cur, sizeof(g_cur), "%s", g_sd);
-        else return;
+        for (int i = 0; i < g_nplaces; i++)
+            if (!strcmp(name, g_places[i].name)) { snprintf(g_cur, sizeof(g_cur), "%s", g_places[i].path); break; }
+        if (g_cur[0] == '\0') return;                  // unknown place -> stay
     } else {
         char nc[1024];
         snprintf(nc, sizeof(nc), "%s/%s", g_cur, name);
@@ -505,8 +563,10 @@ static void enter_dir(const char *name) {
 }
 static void go_up(void) {
     stop_play();
-    // at a place's base (M8Tape / LGPT / SD root) -> back to the PLACES root
-    if (!strcmp(g_cur, g_lib) || (g_lgpt[0] && !strcmp(g_cur, g_lgpt)) || !strcmp(g_cur, g_sd)) {
+    // at a configured place's base -> back to the PLACES root
+    int isPlaceBase = 0;
+    for (int i = 0; i < g_nplaces; i++) if (!strcmp(g_cur, g_places[i].path)) { isPlaceBase = 1; break; }
+    if (isPlaceBase) {
         g_cur[0] = '\0';
     } else {
         char *slash = strrchr(g_cur, '/');
